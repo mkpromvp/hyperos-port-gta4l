@@ -1,0 +1,44 @@
+#!/bin/bash
+# Device configuration for Samsung Galaxy Tab A7 (gta4l/SM-T505N)
+
+DEVICE="gta4l"
+MODEL="SM-T505N"
+MANUFACTURER="Samsung"
+
+# Partition sizes (in bytes)
+SUPER_PARTITION_SIZE=8589934592  # 8GB
+SYSTEM_SIZE_MIN=2147483648       # 2GB
+SYSTEM_SIZE_MAX=4294967296       # 4GB
+VENDOR_SIZE_MIN=536870912        # 512MB
+VENDOR_SIZE_MAX=1073741824       # 1GB
+PRODUCT_SIZE_MIN=268435456       # 256MB
+PRODUCT_SIZE_MAX=536870912       # 512MB
+
+# Super partition block size
+BLOCK_SIZE=4096
+ALIGNMENT=1048576  # 1MB
+
+# Boot image
+BOOT_IMG="boot.img"
+RECOVERY_IMG="recovery.img"
+VBMETA_IMG="vbmeta.img"
+DTBO_IMG="dtbo.img"
+
+# Samsung firmware properties (from stock)
+SAMSUNG_FINGERPRINT="samsung/gta4l_egy/gta4l:12/T505NDXS7CXG1/T505NDXS7CXG1:user/release-keys"
+SAMSUNG_PRODUCT_BOARD="gta4l"
+SAMSUNG_PRODUCT_DEVICE="gta4l"
+SAMSUNG_PRODUCT_MODEL="SM-T505N"
+SAMSUNG_PRODUCT_NAME="gta4l_egy"
+SAMSUNG_PRODUCT_MANUFACTURER="Samsung"
+
+# Security patch
+SAMSUNG_SECURITY_PATCH="2024-06-01"
+
+# Android version base
+BASE_ANDROID_VERSION="12"
+PORT_ANDROID_VERSION="14"
+
+# CSC info
+CSC_CODE="EGY"
+CSC_VERSION="T505NOJM7CXG1"

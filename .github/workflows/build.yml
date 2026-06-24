@@ -1,0 +1,210 @@
+name: Port HyperOS to Galaxy Tab A7
+
+on:
+  workflow_dispatch:
+    inputs:
+      samsung_fw_url:
+        description: 'Samsung AP firmware URL (tar.md5)'
+        required: false
+        default: ''
+      hyperos_fw_url:
+        description: 'HyperOS firmware URL (.tgz or .zip)'
+        required: false
+        default: ''
+      upload_release:
+        description: 'Upload result to GitHub Release'
+        type: boolean
+        default: false
+
+env:
+  DEVICE: gta4l
+  MODEL: SM-T505N
+  HYPEROS_DEFAULT_URL: "https://bigota.d.miui.com/OS1.0.7.0.UMUMIXM/xun_global_images_OS1.0.7.0.UMUMIXM_20241209.0000.00_14.0_global_6b41a0007b.tgz"
+
+jobs:
+  port:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cleanup previous builds
+        run: |
+          rm -rf build output fw_* work 2>/dev/null || true
+          df -h
+          echo "Cleaned up previous build artifacts"
+
+      - name: Setup tools
+        run: |
+          sudo apt update
+          sudo apt install -y lz4 wget unzip tar python3 python3-pip \
+            android-sdk-libsparse e2fsprogs
+          pip3 install protobuf lz4 --quiet
+
+      - name: Build lpunpack/lpmake from AOSP
+        run: |
+          git clone --depth 1 https://android.googlesource.com/platform/system/extras -b android-14.0.0_r1 aosp_extras 2>/dev/null || echo "extras clone failed"
+          cd aosp_extras/partition_tools 2>/dev/null || mkdir -p aosp_extras/partition_tools
+          if [ -d aosp_extras/partition_tools ]; then
+            cd aosp_extras/partition_tools
+            # Try to build - these are simple C++ files
+            g++ -o lpmake lpmake.cc -lpthread 2>/dev/null && echo "lpmake built" || echo "lpmake build failed"
+            g++ -o lpunpack lpunpack.cc -lpthread 2>/dev/null && echo "lpunpack built" || echo "lpunpack build failed"
+            cp lpmake lpunpack /usr/local/bin/ 2>/dev/null || true
+          fi
+          cd "$GITHUB_WORKSPACE"
+
+      - name: Download HyperOS firmware
+        run: |
+          mkdir -p fw_hyperos
+          URL="${{ github.event.inputs.hyperos_fw_url || env.HYPEROS_DEFAULT_URL }}"
+          echo "Downloading HyperOS from: $URL"
+          wget -q --show-progress -O fw_hyperos/hyperos_fw.tgz "$URL" || {
+            echo "Main URL failed, trying alternate mirror"
+            ALT_URL="https://cdn-ota.azureedge.net/OS1.0.7.0.UMUMIXM/xun_global_images_OS1.0.7.0.UMUMIXM_20241209.0000.00_14.0_global_6b41a0007b.tgz"
+            wget -q --show-progress -O fw_hyperos/hyperos_fw.tgz "$ALT_URL" || {
+              echo "Trying XM Firmware Updater mirror"
+              wget -q --show-progress -O fw_hyperos/hyperos_fw.tgz "https://xmfirmwareupdater.com/hyperos/xun/stable/download/OS1.0.7.0.UMUMIXM/fastboot" || {
+                echo "All downloads failed"
+                exit 1
+              }
+            }
+          }
+          ls -la fw_hyperos/
+
+      - name: Download Samsung firmware
+        run: |
+          mkdir -p fw_samsung
+          
+          # Try URL first
+          if [ -n "${{ github.event.inputs.samsung_fw_url }}" ]; then
+            echo "Downloading Samsung firmware from provided URL"
+            wget -q --show-progress -O fw_samsung/samsung_ap.tar.md5 "${{ github.event.inputs.samsung_fw_url }}" && ls -la fw_samsung/ && exit 0
+          fi
+
+          # Try GitHub Release (supports split parts for files >2GB)
+          echo "Trying GitHub Release assets..."
+          gh release download "samsung-firmware" --dir fw_samsung 2>/dev/null || true
+          
+          # Combine split parts if any
+          if ls fw_samsung/AP_T505N.part* 2>/dev/null; then
+            echo "Combining split AP parts..."
+            cat fw_samsung/AP_T505N.part* > fw_samsung/samsung_ap.tar.md5
+            rm -f fw_samsung/AP_T505N.part*
+          fi
+          
+          if [ -f fw_samsung/samsung_ap.tar.md5 ]; then
+            echo "Samsung firmware ready"
+            ls -la fw_samsung/
+            exit 0
+          fi
+
+          # Last resort: use SamFetch API
+          echo "Trying SamFetch API..."
+          curl -sL "https://samfetch.ysfchn.com/EGY/SM-T505N/latest/download" -o fw_samsung/samsung_fw.zip 2>/dev/null || true
+          if [ -f fw_samsung/samsung_fw.zip ] && [ -s fw_samsung/samsung_fw.zip ]; then
+            echo "Downloaded via SamFetch"
+            unzip -o fw_samsung/samsung_fw.zip -d fw_samsung/ || true
+            if ls fw_samsung/AP*.tar.md5 2>/dev/null; then
+              mv fw_samsung/AP*.tar.md5 fw_samsung/samsung_ap.tar.md5
+            fi
+          fi
+
+          if [ ! -f fw_samsung/samsung_ap.tar.md5 ]; then
+            echo "No Samsung firmware found. Options:"
+            echo "  1. Create a GitHub Release 'samsung-firmware' with the AP file"
+            echo "     (split file: split -b 1500M AP_*.tar.md5 AP_T505N.part)"
+            echo "  2. Provide a direct download URL in workflow_dispatch"
+            echo "  3. Upload to external host and use URL input"
+            exit 1
+          fi
+          ls -la fw_samsung/
+
+      - name: Extract and analyze firmware
+        run: |
+          # Check what we have
+          echo "=== Samsung firmware ==="
+          ls -la fw_samsung/ 2>/dev/null || echo "No Samsung fw"
+          echo "=== HyperOS firmware ==="
+          ls -la fw_hyperos/ 2>/dev/null || echo "No HyperOS fw"
+
+          # Create working directory
+          mkdir -p work/samsung work/hyperos
+
+      - name: Cleanup downloaded firmware (save space)
+        run: |
+          rm -rf fw_hyperos/*.tgz fw_samsung/*.tar.md5 2>/dev/null || true
+          df -h
+
+      - name: Run porting process
+        run: |
+          chmod +x scripts/port_hyperos.sh
+          
+          SAMSUNG_PATH=""
+          if [ -f fw_samsung/samsung_ap.tar.md5 ]; then
+            SAMSUNG_PATH="fw_samsung/samsung_ap.tar.md5"
+          elif [ -d fw_samsung ]; then
+            SAMSUNG_PATH="fw_samsung"
+          fi
+          
+          HYPEROS_PATH=""
+          if [ -f fw_hyperos/hyperos_fw.tgz ]; then
+            HYPEROS_PATH="fw_hyperos/hyperos_fw.tgz"
+          elif [ -d fw_hyperos ]; then
+            HYPEROS_PATH="fw_hyperos"
+          fi
+          
+          if [ -z "$SAMSUNG_PATH" ] || [ -z "$HYPEROS_PATH" ]; then
+            echo "ERROR: Missing firmware files"
+            echo "Samsung: $SAMSUNG_PATH"
+            echo "HyperOS: $HYPEROS_PATH"
+            exit 1
+          fi
+          
+          bash scripts/port_hyperos.sh "$SAMSUNG_PATH" "$HYPEROS_PATH" ./output
+
+      - name: Upload ported ROM
+        uses: actions/upload-artifact@v4
+        with:
+          name: HyperOS-Port-SM-T505N
+          path: ./output/*.tar.md5
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: Upload ported super.img (debug)
+        uses: actions/upload-artifact@v4
+        with:
+          name: super_img_debug
+          path: ./build/port/super.img
+          retention-days: 3
+          if-no-files-found: ignore
+
+      - name: Upload to GitHub Release
+        if: inputs.upload_release == true
+        run: |
+          TAG="hyperos-port-$(date +%Y%m%d-%H%M%S)"
+          gh release create "$TAG" ./output/*.tar.md5 --title "HyperOS Port ${{ env.MODEL }} $TAG" --notes "Automated HyperOS 1.0.7.0 port for ${{ env.MODEL }} (gta4l)"
+          echo "Release created: $TAG"
+
+      - name: Final cleanup
+        if: always()
+        run: |
+          echo "Cleaning up build files..."
+          rm -rf build work fw_* aosp_extras 2>/dev/null || true
+          df -h
+          echo "Cleanup complete. Only output artifacts remain."
+
+      - name: Show output summary
+        run: |
+          echo "=== Build Summary ==="
+          echo "Device: ${{ env.MODEL }} (${{ env.DEVICE }})"
+          echo "Port ROM: Redmi Pad SE (xun) HyperOS 1.0.7.0 (Android 14)"
+          echo ""
+          if [ -d output ]; then
+            echo "Output files:"
+            ls -la output/
+          fi
+          if [ -d build/port ]; then
+            echo "Port directory contents:"
+            ls -la build/port/
+          fi
