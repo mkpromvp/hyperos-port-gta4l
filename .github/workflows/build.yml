@@ -72,53 +72,55 @@ jobs:
           }
           ls -la fw_hyperos/
 
-      - name: Download Samsung firmware
+      - name: Download Samsung firmware (samloader)
         run: |
           mkdir -p fw_samsung
           
-          # Try URL first
+          # If URL provided, use it directly
           if [ -n "${{ github.event.inputs.samsung_fw_url }}" ]; then
-            echo "Downloading Samsung firmware from provided URL"
+            echo "Using provided Samsung URL"
             wget -q --show-progress -O fw_samsung/samsung_ap.tar.md5 "${{ github.event.inputs.samsung_fw_url }}" && ls -la fw_samsung/ && exit 0
           fi
 
-          # Try GitHub Release (supports split parts for files >2GB)
-          echo "Trying GitHub Release assets..."
-          gh release download "samsung-firmware" --dir fw_samsung 2>/dev/null || true
-          
-          # Combine split parts if any
-          if ls fw_samsung/AP_T505N.part* 2>/dev/null; then
-            echo "Combining split AP parts..."
-            cat fw_samsung/AP_T505N.part* > fw_samsung/samsung_ap.tar.md5
-            rm -f fw_samsung/AP_T505N.part*
-          fi
-          
-          if [ -f fw_samsung/samsung_ap.tar.md5 ]; then
-            echo "Samsung firmware ready"
-            ls -la fw_samsung/
-            exit 0
-          fi
+          # Download & use samloader-rs (downloads from Samsung servers, no IMEI needed)
+          echo "Downloading samloader-rs..."
+          wget -q "https://github.com/topjohnwu/samloader-rs/releases/latest/download/samloader-x86_64-linux-musl" -O /tmp/samloader
+          chmod +x /tmp/samloader
 
-          # Last resort: use SamFetch API
-          echo "Trying SamFetch API..."
-          curl -sL "https://samfetch.ysfchn.com/EGY/SM-T505N/latest/download" -o fw_samsung/samsung_fw.zip 2>/dev/null || true
-          if [ -f fw_samsung/samsung_fw.zip ] && [ -s fw_samsung/samsung_fw.zip ]; then
-            echo "Downloaded via SamFetch"
-            unzip -o fw_samsung/samsung_fw.zip -d fw_samsung/ || true
-            if ls fw_samsung/AP*.tar.md5 2>/dev/null; then
-              mv fw_samsung/AP*.tar.md5 fw_samsung/samsung_ap.tar.md5
+          echo "Downloading Samsung firmware for SM-T505N (EGY)..."
+          /tmp/samloader -m SM-T505N -r EGY download -O fw_samsung/ 2>&1 | tail -5
+          
+          # Check result
+          if ls fw_samsung/*.tar.md5 1>/dev/null 2>&1; then
+            # Rename for consistency
+            mv fw_samsung/*.tar.md5 fw_samsung/samsung_ap.tar.md5 2>/dev/null || true
+            echo "Samsung firmware downloaded successfully"
+            ls -la fw_samsung/
+          else
+            echo "samloader-rs failed. Trying samloader with different region..."
+            /tmp/samloader -m SM-T505N -r XSG download -O fw_samsung/ 2>&1 | tail -5
+            if ls fw_samsung/*.tar.md5 1>/dev/null 2>&1; then
+              mv fw_samsung/*.tar.md5 fw_samsung/samsung_ap.tar.md5 2>/dev/null || true
+              echo "Samsung firmware downloaded (XSG region)"
+              ls -la fw_samsung/
+            else
+              echo "samloader failed. Trying SamFetch API backup..."
+              curl -sL "https://samfetch.ysfchn.com/EGY/SM-T505N/latest/download" -o fw_samsung/samsung_fw.zip 2>/dev/null || true
+              if [ -f fw_samsung/samsung_fw.zip ] && [ -s fw_samsung/samsung_fw.zip ]; then
+                unzip -o fw_samsung/samsung_fw.zip -d fw_samsung/ || true
+                if ls fw_samsung/AP*.tar.md5 2>/dev/null; then
+                  mv fw_samsung/AP*.tar.md5 fw_samsung/samsung_ap.tar.md5
+                  echo "Downloaded via SamFetch"
+                  ls -la fw_samsung/
+                fi
+              fi
             fi
           fi
-
+          
           if [ ! -f fw_samsung/samsung_ap.tar.md5 ]; then
-            echo "No Samsung firmware found. Options:"
-            echo "  1. Create a GitHub Release 'samsung-firmware' with the AP file"
-            echo "     (split file: split -b 1500M AP_*.tar.md5 AP_T505N.part)"
-            echo "  2. Provide a direct download URL in workflow_dispatch"
-            echo "  3. Upload to external host and use URL input"
+            echo "ERROR: Could not download Samsung firmware. Provide URL via samsung_fw_url input."
             exit 1
           fi
-          ls -la fw_samsung/
 
       - name: Extract and analyze firmware
         run: |
@@ -130,11 +132,6 @@ jobs:
 
           # Create working directory
           mkdir -p work/samsung work/hyperos
-
-      - name: Cleanup downloaded firmware (save space)
-        run: |
-          rm -rf fw_hyperos/*.tgz fw_samsung/*.tar.md5 2>/dev/null || true
-          df -h
 
       - name: Run porting process
         run: |
