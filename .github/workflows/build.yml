@@ -38,7 +38,7 @@ jobs:
         run: |
           sudo apt update
           sudo apt install -y lz4 wget unzip tar python3 python3-pip \
-            android-sdk-libsparse e2fsprogs
+            e2fsprogs simg2img
           pip3 install protobuf lz4 --quiet
 
       - name: Build lpunpack/lpmake from AOSP
