@@ -81,17 +81,18 @@ jobs:
           chmod +x /tmp/samloader
           
           echo "Checking firmware version..."
-          /tmp/samloader -m SM-T505N -r EGY check 2>&1 | head -5 || true
+          /tmp/samloader check-update -m SM-T505N -r EGY 2>&1 | head -5 || true
           
-          echo "Downloading firmware..."
-          /tmp/samloader -m SM-T505N -r EGY download -O fw_samsung/ 2>&1 | head -20 || true
+          echo "Downloading firmware (this may take a while)..."
+          /tmp/samloader download -m SM-T505N -r EGY -d fw_samsung/ 2>&1
           
+          echo "Contents of fw_samsung:"
           ls -la fw_samsung/
           
           # If no files, try XSG region
           if [ -z "$(ls -A fw_samsung/ 2>/dev/null)" ]; then
             echo "Trying XSG region..."
-            /tmp/samloader -m SM-T505N -r XSG download -O fw_samsung/ 2>&1 | head -20 || true
+            /tmp/samloader download -m SM-T505N -r XSG -d fw_samsung/ 2>&1
             ls -la fw_samsung/
           fi
           
