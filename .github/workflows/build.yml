@@ -70,49 +70,47 @@ jobs:
           ls -la fw_hyperos/
           echo "HyperOS firmware downloaded (SourceForge)"
 
-      - name: Download Samsung firmware (samloader)
+      - name: Download Samsung firmware (SamFetch API)
         run: |
           mkdir -p fw_samsung
           
-          # Download samloader-rs
-          echo "Downloading samloader-rs..."
-          wget -q "https://github.com/topjohnwu/samloader-rs/releases/latest/download/samloader-x86_64-linux-musl" -O /tmp/samloader
-          chmod +x /tmp/samloader
-
-          echo "Downloading Samsung firmware for SM-T505N (EGY)..."
-          /tmp/samloader -m SM-T505N -r EGY download -O fw_samsung/ 2>&1 | tail -5
-
-          # Find AP file (AP_*.tar.md5)
-          AP_FILE=$(ls fw_samsung/AP_*.tar.md5 2>/dev/null | head -1)
-          if [ -n "$AP_FILE" ]; then
-            mv "$AP_FILE" fw_samsung/samsung_ap.tar.md5
-            echo "Samsung AP firmware downloaded successfully"
+          # SamFetch API downloads + decrypts on-the-fly (no IMEI, no headers)
+          echo "Downloading Samsung firmware via SamFetch API..."
+          # First try latest firmware
+          curl -sL -o fw_samsung/samsung_fw.zip \
+            "https://samfetch.ysfchn.com/EGY/SM-T505N/latest/download" 2>&1 || true
+          
+          if [ -f fw_samsung/samsung_fw.zip ] && [ -s fw_samsung/samsung_fw.zip ]; then
+            echo "SamFetch download completed ($(stat -c '%s' fw_samsung/samsung_fw.zip) bytes)"
             ls -la fw_samsung/
-          else
-            echo "samloader-rs failed. Trying XSG region..."
-            /tmp/samloader -m SM-T505N -r XSG download -O fw_samsung/ 2>&1 | tail -5
+            # Extract the zip to find AP file
+            unzip -o fw_samsung/samsung_fw.zip -d fw_samsung/ 2>&1 | tail -5 || true
             AP_FILE=$(ls fw_samsung/AP_*.tar.md5 2>/dev/null | head -1)
             if [ -n "$AP_FILE" ]; then
               mv "$AP_FILE" fw_samsung/samsung_ap.tar.md5
-              echo "Samsung AP firmware downloaded (XSG)"
+              echo "Samsung AP firmware downloaded via SamFetch"
               ls -la fw_samsung/
-            else
-              echo "samloader failed. Trying SamFetch API..."
-              curl -sL "https://samfetch.ysfchn.com/EGY/SM-T505N/latest/download" -o fw_samsung/samsung_fw.zip 2>/dev/null || true
-              if [ -f fw_samsung/samsung_fw.zip ] && [ -s fw_samsung/samsung_fw.zip ]; then
-                unzip -o fw_samsung/samsung_fw.zip -d fw_samsung/ || true
-                AP_FILE=$(ls fw_samsung/AP_*.tar.md5 2>/dev/null | head -1)
-                if [ -n "$AP_FILE" ]; then
-                  mv "$AP_FILE" fw_samsung/samsung_ap.tar.md5
-                  echo "Downloaded via SamFetch"
-                  ls -la fw_samsung/
-                fi
-              fi
+            fi
+          fi
+          
+          # If SamFetch failed, try GNSF approach (Python tool)
+          if [ ! -f fw_samsung/samsung_ap.tar.md5 ]; then
+            echo "SamFetch failed or no AP found. Trying GNSF..."
+            pip3 install requests pycryptodome tqdm -q 2>/dev/null
+            wget -q "https://raw.githubusercontent.com/keklick1337/gnsf/main/gnsf.py" -O /tmp/gnsf.py
+            python3 /tmp/gnsf.py -m SM-T505N -r EGY -i 12345678 download -O fw_samsung/ 2>&1 | tail -10 || true
+            AP_FILE=$(ls fw_samsung/AP_*.tar.md5 2>/dev/null | head -1)
+            if [ -n "$AP_FILE" ]; then
+              mv "$AP_FILE" fw_samsung/samsung_ap.tar.md5
+              echo "Samsung AP firmware downloaded via GNSF"
+              ls -la fw_samsung/
             fi
           fi
           
           if [ ! -f fw_samsung/samsung_ap.tar.md5 ]; then
-            echo "ERROR: Could not download Samsung firmware. Provide URL via samsung_fw_url input."
+            echo "ERROR: Could not download Samsung firmware."
+            echo "The Samsung firmware is available at: D:\SAMFW.COM_SM-T505N_EGY_T505NDXS7CXG1_fac"
+            echo "Upload it to GitHub Release manually and re-run with 'samsung_fw_url' input."
             exit 1
           fi
 
