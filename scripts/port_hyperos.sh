@@ -33,30 +33,22 @@ setup_tools() {
 
     sudo apt update
     sudo apt install -y lz4 wget unzip tar python3 python3-pip \
-        android-sdk-libsparse e2fsprogs
+        android-sdk-libsparse-utils e2fsprogs
 
     pip3 install --quiet protobuf lz4 2>/dev/null || true
 
-    # Build lpunpack/lpmake from AOSP source
-    if [ ! -f "$TOOLS_DIR/lpunpack" ] || [ ! -f "$TOOLS_DIR/lpmake" ]; then
-        print_step "Building lpunpack/lpmake from AOSP"
-        git clone --depth 1 https://android.googlesource.com/platform/system/extras -b android-14.0.0_r1 "$WORK_DIR/aosp_extras" 2>/dev/null || true
-        cd "$WORK_DIR/aosp_extras/partition_tools"
-        g++ -static -o lpmake lpmake.cc -lpthread 2>/dev/null || {
-            print_warn "Static build failed, trying dynamic"
-            g++ -o lpmake lpmake.cc -lpthread -llz4 2>/dev/null || \
-            g++ -o lpmake lpmake.cc -lpthread
-        }
-        g++ -static -o lpunpack lpunpack.cc -lpthread 2>/dev/null || {
-            print_warn "Static lpunpack build failed, trying dynamic"
-            g++ -o lpunpack lpunpack.cc -lpthread -llz4 2>/dev/null || \
-            g++ -o lpunpack lpunpack.cc -lpthread
-        }
-        cp lpmake lpunpack "$TOOLS_DIR/" 2>/dev/null || true
-        cd "$WORK_DIR"
+    # Check lpunpack/lpmake are available
+    if ! command -v lpunpack &>/dev/null || ! command -v lpmake &>/dev/null; then
+        print_warn "lpunpack/lpmake not in PATH, checking tools dir"
+        if [ -f "$TOOLS_DIR/lpunpack" ] && [ -f "$TOOLS_DIR/lpmake" ]; then
+            export PATH="$TOOLS_DIR:$PATH"
+            print_ok "Found tools in $TOOLS_DIR"
+        else
+            print_err "lpunpack/lpmake not found. Install them first!"
+            exit 1
+        fi
     fi
 
-    export PATH="$TOOLS_DIR:$PATH"
     print_ok "Tools ready"
 }
 
@@ -236,6 +228,13 @@ extract_hyperos() {
         HYPEROS_IMG_DIR="$HYPEROS_OUT/images"
     else
         HYPEROS_IMG_DIR="$HYPEROS_OUT"
+    fi
+
+    # Handle repack format: firmware-update/greeshan.img → super.img
+    if [ -f "$HYPEROS_OUT/firmware-update/greeshan.img" ]; then
+        print_step "Found greeshan.img (repack format), copying to super.img"
+        cp "$HYPEROS_OUT/firmware-update/greeshan.img" "$HYPEROS_IMG_DIR/super.img"
+        print_ok "Copied greeshan.img → super.img ($(stat -c '%s' "$HYPEROS_IMG_DIR/super.img") bytes)"
     fi
 
     # If it's a recovery ROM with payload.bin

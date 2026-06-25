@@ -19,7 +19,8 @@ on:
 env:
   DEVICE: gta4l
   MODEL: SM-T505N
-  HYPEROS_DEFAULT_URL: "https://hugeota.d.miui.com/OS1.0.7.0.UMUMIXM/xun_global_images_OS1.0.7.0.UMUMIXM_20241209.0000.00_14.0_global_6b41a0007b.tgz"
+  HYPEROS_SF_URL: "https://master.dl.sourceforge.net/project/miui-greeshan-repack/HyperOS/Xiaomi-PadSE-xun/greeshan.ru_XiaomiPadSE_xun_V1.0.7.0.UMUMIXM_14.0_7349f.zip?viasf=1"
+  HYPEROS_SF_FALLBACK: "https://downloads.sourceforge.net/project/miui-greeshan-repack/HyperOS/Xiaomi-PadSE-xun/greeshan.ru_XiaomiPadSE_xun_V1.0.7.0.UMUMIXM_14.0_7349f.zip"
 
 jobs:
   port:
@@ -41,85 +42,68 @@ jobs:
             e2fsprogs android-sdk-libsparse-utils aria2
           pip3 install protobuf lz4 --quiet
 
-      - name: Build lpunpack/lpmake from AOSP
+      - name: Setup pre-built partition tools
         run: |
-          git clone --depth 1 https://android.googlesource.com/platform/system/extras -b android-14.0.0_r1 aosp_extras 2>/dev/null || echo "extras clone failed"
-          cd aosp_extras/partition_tools 2>/dev/null || mkdir -p aosp_extras/partition_tools
-          if [ -d aosp_extras/partition_tools ]; then
-            cd aosp_extras/partition_tools
-            # Try to build - these are simple C++ files
-            g++ -o lpmake lpmake.cc -lpthread 2>/dev/null && echo "lpmake built" || echo "lpmake build failed"
-            g++ -o lpunpack lpunpack.cc -lpthread 2>/dev/null && echo "lpunpack built" || echo "lpunpack build failed"
-            cp lpmake lpunpack /usr/local/bin/ 2>/dev/null || true
-          fi
-          cd "$GITHUB_WORKSPACE"
+          chmod +x tools/lpunpack tools/lpmake
+          cp tools/lpunpack tools/lpmake /usr/local/bin/
+          echo "Pre-built lpunpack/lpmake installed"
+          lpunpack --help 2>&1 | head -3 || echo "lpunpack ready"
 
-      - name: Download HyperOS firmware
+      - name: Download HyperOS firmware (SourceForge - fast CDN)
         run: |
           mkdir -p fw_hyperos
-          VER="OS1.0.7.0.UMUMIXM"
-          FILE="xun_global_images_${VER}_20241209.0000.00_14.0_global_6b41a0007b.tgz"
           
-          # Try fastest mirrors first
-          for MIRROR in \
-            "https://hugeota.d.miui.com/${VER}/${FILE}" \
-            "https://bigota.d.miui.com/${VER}/${FILE}" \
-            "${{ github.event.inputs.hyperos_fw_url }}"; do
-            [ -z "$MIRROR" ] && continue
-            echo "Trying: $MIRROR"
-            aria2c -x 4 -s 4 --max-connection-per-server=4 --connect-timeout=30 \
-              --timeout=300 --retry-wait=5 --max-tries=3 --allow-overwrite=true \
-              --dir=fw_hyperos --out=hyperos_fw.tgz "$MIRROR" 2>&1 && {
-              echo "Download successful from: $MIRROR"
-              break
-            }
-            echo "Mirror failed, trying next..."
-          done
+          # SourceForge mirror (fast from GitHub Actions)
+          aria2c -x 8 -s 8 --max-connection-per-server=8 --connect-timeout=30 \
+            --timeout=600 --retry-wait=5 --max-tries=5 --allow-overwrite=true \
+            --dir=fw_hyperos --out=hyperos_fw.zip "${{ env.HYPEROS_SF_URL }}" 2>&1 || {
+            echo "Primary SF mirror failed, trying fallback..."
+            aria2c -x 8 -s 8 --max-connection-per-server=8 --connect-timeout=30 \
+              --timeout=600 --retry-wait=5 --max-tries=5 --allow-overwrite=true \
+              --dir=fw_hyperos --out=hyperos_fw.zip "${{ env.HYPEROS_SF_FALLBACK }}" 2>&1
+          }
           
-          if [ ! -f fw_hyperos/hyperos_fw.tgz ]; then
+          if [ ! -f fw_hyperos/hyperos_fw.zip ]; then
             echo "All HyperOS downloads failed"
             exit 1
           fi
           ls -la fw_hyperos/
+          echo "HyperOS firmware downloaded (SourceForge)"
 
       - name: Download Samsung firmware (samloader)
         run: |
           mkdir -p fw_samsung
           
-          # If URL provided, use it directly
-          if [ -n "${{ github.event.inputs.samsung_fw_url }}" ]; then
-            echo "Using provided Samsung URL"
-            wget -q --show-progress -O fw_samsung/samsung_ap.tar.md5 "${{ github.event.inputs.samsung_fw_url }}" && ls -la fw_samsung/ && exit 0
-          fi
-
-          # Download & use samloader-rs (downloads from Samsung servers, no IMEI needed)
+          # Download samloader-rs
           echo "Downloading samloader-rs..."
           wget -q "https://github.com/topjohnwu/samloader-rs/releases/latest/download/samloader-x86_64-linux-musl" -O /tmp/samloader
           chmod +x /tmp/samloader
 
           echo "Downloading Samsung firmware for SM-T505N (EGY)..."
           /tmp/samloader -m SM-T505N -r EGY download -O fw_samsung/ 2>&1 | tail -5
-          
-          # Check result
-          if ls fw_samsung/*.tar.md5 1>/dev/null 2>&1; then
-            # Rename for consistency
-            mv fw_samsung/*.tar.md5 fw_samsung/samsung_ap.tar.md5 2>/dev/null || true
-            echo "Samsung firmware downloaded successfully"
+
+          # Find AP file (AP_*.tar.md5)
+          AP_FILE=$(ls fw_samsung/AP_*.tar.md5 2>/dev/null | head -1)
+          if [ -n "$AP_FILE" ]; then
+            mv "$AP_FILE" fw_samsung/samsung_ap.tar.md5
+            echo "Samsung AP firmware downloaded successfully"
             ls -la fw_samsung/
           else
-            echo "samloader-rs failed. Trying samloader with different region..."
+            echo "samloader-rs failed. Trying XSG region..."
             /tmp/samloader -m SM-T505N -r XSG download -O fw_samsung/ 2>&1 | tail -5
-            if ls fw_samsung/*.tar.md5 1>/dev/null 2>&1; then
-              mv fw_samsung/*.tar.md5 fw_samsung/samsung_ap.tar.md5 2>/dev/null || true
-              echo "Samsung firmware downloaded (XSG region)"
+            AP_FILE=$(ls fw_samsung/AP_*.tar.md5 2>/dev/null | head -1)
+            if [ -n "$AP_FILE" ]; then
+              mv "$AP_FILE" fw_samsung/samsung_ap.tar.md5
+              echo "Samsung AP firmware downloaded (XSG)"
               ls -la fw_samsung/
             else
-              echo "samloader failed. Trying SamFetch API backup..."
+              echo "samloader failed. Trying SamFetch API..."
               curl -sL "https://samfetch.ysfchn.com/EGY/SM-T505N/latest/download" -o fw_samsung/samsung_fw.zip 2>/dev/null || true
               if [ -f fw_samsung/samsung_fw.zip ] && [ -s fw_samsung/samsung_fw.zip ]; then
                 unzip -o fw_samsung/samsung_fw.zip -d fw_samsung/ || true
-                if ls fw_samsung/AP*.tar.md5 2>/dev/null; then
-                  mv fw_samsung/AP*.tar.md5 fw_samsung/samsung_ap.tar.md5
+                AP_FILE=$(ls fw_samsung/AP_*.tar.md5 2>/dev/null | head -1)
+                if [ -n "$AP_FILE" ]; then
+                  mv "$AP_FILE" fw_samsung/samsung_ap.tar.md5
                   echo "Downloaded via SamFetch"
                   ls -la fw_samsung/
                 fi
@@ -155,8 +139,8 @@ jobs:
           fi
           
           HYPEROS_PATH=""
-          if [ -f fw_hyperos/hyperos_fw.tgz ]; then
-            HYPEROS_PATH="fw_hyperos/hyperos_fw.tgz"
+          if [ -f fw_hyperos/hyperos_fw.zip ]; then
+            HYPEROS_PATH="fw_hyperos/hyperos_fw.zip"
           elif [ -d fw_hyperos ]; then
             HYPEROS_PATH="fw_hyperos"
           fi
