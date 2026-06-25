@@ -70,47 +70,62 @@ jobs:
           ls -la fw_hyperos/
           echo "HyperOS firmware downloaded (SourceForge)"
 
-      - name: Download Samsung firmware (SamFetch API)
+      - name: Download Samsung firmware (samloader CLI)
         run: |
           mkdir -p fw_samsung
           
-          # SamFetch API downloads + decrypts on-the-fly (no IMEI, no headers)
-          echo "Downloading Samsung firmware via SamFetch API..."
-          # First try latest firmware
-          curl -sL -o fw_samsung/samsung_fw.zip \
-            "https://samfetch.ysfchn.com/EGY/SM-T505N/latest/download" 2>&1 || true
+          # Install samloader Python CLI
+          pip3 install git+https://github.com/samloader/samloader.git -q 2>&1 | tail -1 || true
           
-          if [ -f fw_samsung/samsung_fw.zip ] && [ -s fw_samsung/samsung_fw.zip ]; then
-            echo "SamFetch download completed ($(stat -c '%s' fw_samsung/samsung_fw.zip) bytes)"
+          # Get firmware version
+          VERSION=$(samloader -m SM-T505N -r EGY checkupdate 2>/dev/null || echo "")
+          if [ -z "$VERSION" ]; then
+            echo "samloader checkupdate failed, trying XSG region..."
+            VERSION=$(samloader -m SM-T505N -r XSG checkupdate 2>/dev/null || echo "")
+          fi
+          echo "Firmware version: $VERSION"
+          
+          if [ -n "$VERSION" ]; then
+            # Download encrypted firmware
+            echo "Downloading encrypted firmware..."
+            samloader -m SM-T505N -r EGY download -v "$VERSION" -O fw_samsung/ 2>&1 || \
+            samloader -m SM-T505N -r XSG download -v "$VERSION" -O fw_samsung/ 2>&1 || true
+            
+            # Find encrypted file
+            ENC_FILE=$(ls fw_samsung/*.enc4 fw_samsung/*.enc2 2>/dev/null | head -1)
+            if [ -n "$ENC_FILE" ]; then
+              echo "Decrypting firmware..."
+              # Determine enc version (4 for enc4, 2 for enc2)
+              if echo "$ENC_FILE" | grep -q ".enc4"; then
+                ENC_VER=4
+              else
+                ENC_VER=2
+              fi
+              samloader -m SM-T505N -r EGY decrypt -v "$VERSION" -V $ENC_VER -i "$ENC_FILE" -o "fw_samsung/samsung_fw.tar.md5" 2>&1 || true
+            fi
             ls -la fw_samsung/
-            # Extract the zip to find AP file
-            unzip -o fw_samsung/samsung_fw.zip -d fw_samsung/ 2>&1 | tail -5 || true
-            AP_FILE=$(ls fw_samsung/AP_*.tar.md5 2>/dev/null | head -1)
-            if [ -n "$AP_FILE" ]; then
-              mv "$AP_FILE" fw_samsung/samsung_ap.tar.md5
-              echo "Samsung AP firmware downloaded via SamFetch"
-              ls -la fw_samsung/
-            fi
+          else
+            echo "samloader completely failed. Trying GNSF fallback..."
+            git clone --depth 1 https://github.com/keklick1337/gnsf.git /tmp/gnsf 2>/dev/null
+            cd /tmp/gnsf && pip3 install -r requirements.txt -q 2>/dev/null || true
+            python3 /tmp/gnsf/gnsf.py -m SM-T505N -r EGY -i 12345678 download -O "$GITHUB_WORKSPACE/fw_samsung/" 2>&1 | tail -5 || true
+            cd "$GITHUB_WORKSPACE"
           fi
-          
-          # If SamFetch failed, try GNSF approach (Python tool)
-          if [ ! -f fw_samsung/samsung_ap.tar.md5 ]; then
-            echo "SamFetch failed or no AP found. Trying GNSF..."
-            pip3 install requests pycryptodome tqdm -q 2>/dev/null
-            wget -q "https://raw.githubusercontent.com/keklick1337/gnsf/main/gnsf.py" -O /tmp/gnsf.py
-            python3 /tmp/gnsf.py -m SM-T505N -r EGY -i 12345678 download -O fw_samsung/ 2>&1 | tail -10 || true
-            AP_FILE=$(ls fw_samsung/AP_*.tar.md5 2>/dev/null | head -1)
-            if [ -n "$AP_FILE" ]; then
-              mv "$AP_FILE" fw_samsung/samsung_ap.tar.md5
-              echo "Samsung AP firmware downloaded via GNSF"
-              ls -la fw_samsung/
-            fi
+      
+      - name: Find and rename Samsung AP
+        run: |
+          AP_FILE=$(ls fw_samsung/AP_*.tar.md5 2>/dev/null | head -1)
+          if [ -z "$AP_FILE" ]; then
+            AP_FILE=$(ls fw_samsung/*.tar.md5 2>/dev/null | head -1)
           fi
-          
-          if [ ! -f fw_samsung/samsung_ap.tar.md5 ]; then
+          if [ -n "$AP_FILE" ]; then
+            mv "$AP_FILE" fw_samsung/samsung_ap.tar.md5
+            echo "Samsung AP firmware ready: $(stat -c '%s' fw_samsung/samsung_ap.tar.md5) bytes"
+            ls -la fw_samsung/
+          else
+            echo "No AP file found."
+            ls -la fw_samsung/ 2>/dev/null || echo "Directory empty"
             echo "ERROR: Could not download Samsung firmware."
-            echo "The Samsung firmware is available at: D:\SAMFW.COM_SM-T505N_EGY_T505NDXS7CXG1_fac"
-            echo "Upload it to GitHub Release manually and re-run with 'samsung_fw_url' input."
             exit 1
           fi
 
