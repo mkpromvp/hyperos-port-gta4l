@@ -38,7 +38,7 @@ jobs:
         run: |
           sudo apt update
           sudo apt install -y lz4 wget unzip tar python3 python3-pip \
-            e2fsprogs android-sdk-libsparse-utils
+            e2fsprogs android-sdk-libsparse-utils aria2
           pip3 install protobuf lz4 --quiet
 
       - name: Build lpunpack/lpmake from AOSP
@@ -58,16 +58,18 @@ jobs:
         run: |
           mkdir -p fw_hyperos
           URL="${{ github.event.inputs.hyperos_fw_url || env.HYPEROS_DEFAULT_URL }}"
-          echo "Downloading HyperOS from: $URL"
-          # Try Azure CDN first (fastest on GitHub Actions since same network)
-          wget -q --show-progress --timeout=60 -O fw_hyperos/hyperos_fw.tgz \
-            "https://cdn-ota.azureedge.net/OS1.0.7.0.UMUMIXM/xun_global_images_OS1.0.7.0.UMUMIXM_20241209.0000.00_14.0_global_6b41a0007b.tgz" 2>/dev/null || {
-            echo "Azure mirror failed, trying Xiaomi CDN"
-            wget -q --show-progress --timeout=120 -O fw_hyperos/hyperos_fw.tgz "$URL" 2>/dev/null || {
-              echo "Xiaomi CDN failed, trying XM Firmware Updater"
-              wget -q --show-progress --timeout=60 -O fw_hyperos/hyperos_fw.tgz \
-                "https://xmfirmwareupdater.com/hyperos/xun/stable/download/OS1.0.7.0.UMUMIXM/fastboot" 2>/dev/null || {
-                echo "All downloads failed"
+          echo "Downloading HyperOS firmware (5.3 GB)..."
+          echo "URL: $URL"
+          # Use aria2c for multi-connection download (much faster than wget)
+          aria2c -x 4 -s 4 --max-connection-per-server=4 --connect-timeout=30 \
+            --timeout=120 --retry-wait=5 --max-tries=5 \
+            --dir=fw_hyperos --out=hyperos_fw.tgz "$URL" || {
+            echo "aria2c failed, falling back to wget..."
+            wget -q --show-progress --timeout=300 -O fw_hyperos/hyperos_fw.tgz "$URL" || {
+              echo "bigota failed, trying xmfirmwareupdater.com..."
+              wget -q --show-progress --timeout=120 -O fw_hyperos/hyperos_fw.tgz \
+                "https://xmfirmwareupdater.com/hyperos/xun/stable/download/OS1.0.7.0.UMUMIXM/fastboot" || {
+                echo "All HyperOS downloads failed"
                 exit 1
               }
             }
