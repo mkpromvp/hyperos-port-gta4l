@@ -134,11 +134,15 @@ if not logic_val:
         logic_val = m.group(1).strip()
         break
 
-print(f"[+] LOGIC_VALUE: {logic_val}")
+print(f"[+] Raw LOGIC_VALUE: {logic_val}")
 if not logic_val:
     print(f"ERROR: No LOGIC_VALUE found in response")
     print(f"Response text: {r.text[:2000]}")
     sys.exit(1)
+
+# Strip XML tags from LOGIC_VALUE (e.g. <Data>value</Data>)
+logic_val = re.sub(r'<[^>]+>', '', logic_val).strip()
+print(f"[+] Clean LOGIC_VALUE: {logic_val}")
 
 key_str = get_logic_check(FW, logic_val)
 key = hashlib.md5(key_str.encode()).digest()
