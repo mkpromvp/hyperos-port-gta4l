@@ -70,20 +70,21 @@ jobs:
           ls -la fw_hyperos/
           echo "HyperOS firmware downloaded (SourceForge)"
 
-      - name: Download Samsung firmware (samloader-rs v2.0.0)
+      - name: Download and decrypt Samsung firmware (samloader-rs v2.0.0)
         run: |
           mkdir -p fw_samsung
           
           # Download and install samloader-rs v2.0.0 (Rust, standalone binary)
-          echo "Downloading samloader-rs v2.0.0 (Rust)..."
+          echo "Downloading samloader-rs v2.0.0..."
           wget -q "https://github.com/topjohnwu/samloader-rs/releases/download/2.0.0/samloader-v2.0.0-linux-x86_64.tar.xz" -O /tmp/samloader.tar.xz
           tar -xf /tmp/samloader.tar.xz -C /tmp/
           chmod +x /tmp/samloader
           
           echo "Checking firmware version..."
-          /tmp/samloader check-update -m SM-T505N -r EGY 2>&1 | head -5 || true
+          FW_VER=$(/tmp/samloader check-update -m SM-T505N -r EGY 2>&1 | head -1)
+          echo "Firmware version: $FW_VER"
           
-          echo "Downloading firmware (this may take a while)..."
+          echo "Downloading encrypted firmware..."
           /tmp/samloader download -m SM-T505N -r EGY -d fw_samsung/ 2>&1
           
           echo "Contents of fw_samsung:"
@@ -96,8 +97,25 @@ jobs:
             ls -la fw_samsung/
           fi
           
-          # If still empty, try GNSF
-          if [ -z "$(ls -A fw_samsung/ 2>/dev/null)" ]; then
+          # If we got an encrypted file and no tar.md5 yet, decrypt it
+          ENC_FILE=""
+          for f in fw_samsung/*.zip fw_samsung/*.enc4; do
+            if [ -f "$f" ]; then ENC_FILE="$f"; break; fi
+          done
+          if [ -n "$ENC_FILE" ] && [ ! -f fw_samsung/samsung_ap.tar.md5 ]; then
+            echo "Decrypting firmware with Python samloader..."
+            pip3 install pycryptodome -q 2>/dev/null || true
+            pip3 install git+https://github.com/samloader/samloader.git -q 2>/dev/null | tail -1
+            FIND_SAMLOADER=$(which samloader 2>/dev/null || echo "$HOME/.local/bin/samloader")
+            PDA=$(echo "$FW_VER" | cut -d/ -f1)
+            echo "PDA: $PDA, Encrypted: $ENC_FILE"
+            $FIND_SAMLOADER -m SM-T505N -r EGY decrypt -v "$PDA" -V 4 -i "$ENC_FILE" -o fw_samsung/samsung_ap.tar.md5 2>&1 || \
+            $FIND_SAMLOADER -m SM-T505N -r EGY decrypt -v "$FW_VER" -V 4 -i "$ENC_FILE" -o fw_samsung/samsung_ap.tar.md5 2>&1
+            ls -la fw_samsung/samsung_ap.tar.md5 2>/dev/null || echo "Decryption failed"
+          fi
+          
+          # If still empty/no tar.md5, try GNSF
+          if [ -z "$(ls fw_samsung/*.tar.md5 2>/dev/null)" ]; then
             echo "samloader-rs failed. Trying GNSF fallback..."
             git clone --depth 1 https://github.com/keklick1337/gnsf.git /tmp/gnsf 2>/dev/null
             cd /tmp/gnsf && pip3 install -r requirements.txt -q 2>/dev/null || true
@@ -105,14 +123,13 @@ jobs:
             cd "$GITHUB_WORKSPACE"
           fi
       
-      - name: Find and rename Samsung AP
+      - name: Verify Samsung AP file
         run: |
-          AP_FILE=$(ls fw_samsung/AP_*.tar.md5 2>/dev/null | head -1)
-          if [ -z "$AP_FILE" ]; then
-            AP_FILE=$(ls fw_samsung/*.tar.md5 2>/dev/null | head -1)
-          fi
+          AP_FILE=$(ls fw_samsung/AP_*.tar.md5 fw_samsung/samsung_ap.tar.md5 2>/dev/null | head -1)
           if [ -n "$AP_FILE" ]; then
-            mv "$AP_FILE" fw_samsung/samsung_ap.tar.md5
+            if [ "$AP_FILE" != "fw_samsung/samsung_ap.tar.md5" ]; then
+              mv "$AP_FILE" fw_samsung/samsung_ap.tar.md5
+            fi
             echo "Samsung AP firmware ready: $(stat -c '%s' fw_samsung/samsung_ap.tar.md5) bytes"
             ls -la fw_samsung/
           else
