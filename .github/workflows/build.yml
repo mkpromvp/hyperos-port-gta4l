@@ -19,7 +19,7 @@ on:
 env:
   DEVICE: gta4l
   MODEL: SM-T505N
-  HYPEROS_DEFAULT_URL: "https://bigota.d.miui.com/OS1.0.7.0.UMUMIXM/xun_global_images_OS1.0.7.0.UMUMIXM_20241209.0000.00_14.0_global_6b41a0007b.tgz"
+  HYPEROS_DEFAULT_URL: "https://hugeota.d.miui.com/OS1.0.7.0.UMUMIXM/xun_global_images_OS1.0.7.0.UMUMIXM_20241209.0000.00_14.0_global_6b41a0007b.tgz"
 
 jobs:
   port:
@@ -57,23 +57,29 @@ jobs:
       - name: Download HyperOS firmware
         run: |
           mkdir -p fw_hyperos
-          URL="${{ github.event.inputs.hyperos_fw_url || env.HYPEROS_DEFAULT_URL }}"
-          echo "Downloading HyperOS firmware (5.3 GB)..."
-          echo "URL: $URL"
-          # Use aria2c for multi-connection download (much faster than wget)
-          aria2c -x 4 -s 4 --max-connection-per-server=4 --connect-timeout=30 \
-            --timeout=120 --retry-wait=5 --max-tries=5 \
-            --dir=fw_hyperos --out=hyperos_fw.tgz "$URL" || {
-            echo "aria2c failed, falling back to wget..."
-            wget -q --show-progress --timeout=300 -O fw_hyperos/hyperos_fw.tgz "$URL" || {
-              echo "bigota failed, trying xmfirmwareupdater.com..."
-              wget -q --show-progress --timeout=120 -O fw_hyperos/hyperos_fw.tgz \
-                "https://xmfirmwareupdater.com/hyperos/xun/stable/download/OS1.0.7.0.UMUMIXM/fastboot" || {
-                echo "All HyperOS downloads failed"
-                exit 1
-              }
+          VER="OS1.0.7.0.UMUMIXM"
+          FILE="xun_global_images_${VER}_20241209.0000.00_14.0_global_6b41a0007b.tgz"
+          
+          # Try fastest mirrors first
+          for MIRROR in \
+            "https://hugeota.d.miui.com/${VER}/${FILE}" \
+            "https://bigota.d.miui.com/${VER}/${FILE}" \
+            "${{ github.event.inputs.hyperos_fw_url }}"; do
+            [ -z "$MIRROR" ] && continue
+            echo "Trying: $MIRROR"
+            aria2c -x 4 -s 4 --max-connection-per-server=4 --connect-timeout=30 \
+              --timeout=300 --retry-wait=5 --max-tries=3 --allow-overwrite=true \
+              --dir=fw_hyperos --out=hyperos_fw.tgz "$MIRROR" 2>&1 && {
+              echo "Download successful from: $MIRROR"
+              break
             }
-          }
+            echo "Mirror failed, trying next..."
+          done
+          
+          if [ ! -f fw_hyperos/hyperos_fw.tgz ]; then
+            echo "All HyperOS downloads failed"
+            exit 1
+          fi
           ls -la fw_hyperos/
 
       - name: Download Samsung firmware (samloader)
