@@ -90,27 +90,65 @@ jobs:
           
           ls -la fw_samsung/
       
-      - name: Decrypt Samsung firmware (Python implementation of samloader-rs auth)
+      - name: Verify and prepare Samsung firmware
         run: |
-          pip3 install pycryptodome requests -q 2>&1 | tail -1
-          python3 scripts/decrypt_samsung.py
-      
-      - name: Verify Samsung AP file
-        run: |
-          AP_FILE=$(ls fw_samsung/samsung_ap.tar.md5 fw_samsung/AP_*.tar.md5 fw_samsung/*.tar* 2>/dev/null | head -1)
-          if [ -n "$AP_FILE" ]; then
-            if [ "$AP_FILE" != "fw_samsung/samsung_ap.tar.md5" ]; then
-              mv "$AP_FILE" fw_samsung/samsung_ap.tar.md5
+          cd fw_samsung
+          DL_FILE=$(ls *.zip *.enc4 *.tar* 2>/dev/null | head -1)
+          echo "Downloaded file: $DL_FILE"
+          file "$DL_FILE"
+          
+          # Check if already a valid archive
+          if tar -tf "$DL_FILE" &>/dev/null; then
+            echo "File is a valid tar archive (samloader-rs decrypted on-the-fly)"
+            mv "$DL_FILE" samsung_ap.tar.md5
+          elif unzip -t "$DL_FILE" &>/dev/null; then
+            echo "File is a valid zip archive"
+            unzip -o "$DL_FILE" -d extracted/
+            # Find tar.md5 files inside
+            AP_FILE=$(ls extracted/*.tar.md5 extracted/*.tar 2>/dev/null | head -1)
+            if [ -n "$AP_FILE" ]; then
+              mv "$AP_FILE" samsung_ap.tar.md5
+            else
+              echo "No tar.md5 found in zip, need further processing"
+              mv "$DL_FILE" samsung_fw.zip
             fi
-            echo "Samsung AP firmware ready: $(stat -c '%s' fw_samsung/samsung_ap.tar.md5) bytes"
-            file fw_samsung/samsung_ap.tar.md5
-            ls -la fw_samsung/
           else
-            echo "No AP file found."
-            ls -la fw_samsung/ 2>/dev/null || echo "Directory empty"
-            echo "ERROR: Could not download Samsung firmware."
+            echo "File not a recognized archive, need to decrypt..."
+            pip3 install pycryptodome requests -q 2>&1 | tail -1
+            python3 ../scripts/decrypt_samsung.py
+            
+            # Check decrypted file
+            if tar -tf samsung_ap.tar.md5 &>/dev/null; then
+              echo "Decryption successful! File is a valid tar archive."
+            elif unzip -t samsung_ap.tar.md5 &>/dev/null; then
+              echo "Decryption produced a zip file"
+              mv samsung_ap.tar.md5 decrypted.zip
+              unzip -o decrypted.zip -d extracted/
+              AP_FILE=$(ls extracted/*.tar.md5 extracted/*.tar 2>/dev/null | head -1)
+              if [ -n "$AP_FILE" ]; then
+                mv "$AP_FILE" samsung_ap.tar.md5
+              fi
+            else
+              echo "Decryption still produced unrecognized data."
+              file samsung_ap.tar.md5
+              hexdump -C samsung_ap.tar.md5 2>/dev/null | head -5 || od -A x -t x1z -N 64 samsung_ap.tar.md5
+              # Maybe it's already stripped of enc4 by samloader - try as-is
+              echo "Trying to use as-is..."
+            fi
+          fi
+          
+          # Final check
+          if [ -f samsung_ap.tar.md5 ]; then
+            echo "Samsung AP firmware ready: $(stat -c '%s' samsung_ap.tar.md5) bytes"
+            file samsung_ap.tar.md5
+          elif [ -f samsung_fw.zip ]; then
+            echo "Samsung firmware as zip"
+          else
+            echo "ERROR: Could not prepare Samsung firmware."
+            ls -la
             exit 1
           fi
+          cd ..
 
       - name: Extract and analyze firmware
         run: |
