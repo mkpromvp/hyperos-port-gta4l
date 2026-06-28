@@ -101,6 +101,22 @@ extract_samsung() {
         fi
     done
 
+    # Convert sparse images to raw (Samsung often uses sparse format)
+    if command -v simg2img &>/dev/null; then
+        for img in super.img vendor.img system.img product.img odm.img; do
+            if [ -f "$img" ]; then
+                local IMG_TYPE
+                IMG_TYPE=$(file -b "$img" | head -1)
+                if echo "$IMG_TYPE" | grep -qi "sparse"; then
+                    print_step "Converting sparse image: $img"
+                    mv "$img" "${img}.sparse"
+                    simg2img "${img}.sparse" "$img"
+                    print_ok "Converted $img from sparse to raw"
+                fi
+            fi
+        done
+    fi
+
     # Extract super.img using lpunpack
     if [ -f "$SAMSUNG_OUT/super.img" ]; then
         print_step "Extracting super.img with lpunpack"
