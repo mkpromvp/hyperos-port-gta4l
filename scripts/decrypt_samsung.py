@@ -119,6 +119,20 @@ r = sess.post("https://neofussvr.sslcs.cdngc.net/NF_SmartDownloadBinaryInform.do
     headers={"Authorization": auth_header}, data=inform_xml, timeout=30)
 r.raise_for_status()
 
+# Parse BINARY_SW_VERSION from response - this may differ from the request value
+resp_fw = ""
+for m in re.finditer(r'<BINARY_SW_VERSION[^>]*>(.*?)</BINARY_SW_VERSION>', r.text, re.DOTALL):
+    val = m.group(1).strip()
+    val = re.sub(r'<[^>]+>', '', val).strip()
+    if val:
+        resp_fw = val
+        break
+if resp_fw:
+    print(f"[*] Response FW version: {resp_fw}")
+    FW = resp_fw
+
+print(f"[*] Response XML (first 2000 chars): {r.text[:2000]}")
+
 logic_val = ""
 for m in re.finditer(r'<LOGIC_VALUE_FACTORY[^>]*>(.*?)</LOGIC_VALUE_FACTORY>', r.text, re.DOTALL):
     logic_val = m.group(1).strip()
