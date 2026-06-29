@@ -240,12 +240,16 @@ extract_hyperos() {
             ;;
     esac
 
+    # Show extracted structure
+    print_ok "Extracted HyperOS zip to: $(ls -d $HYPEROS_OUT/*/ 2>/dev/null | tr '\n' ' ')"
+
     # Find image files
     if [ -d "$HYPEROS_OUT/images" ]; then
         HYPEROS_IMG_DIR="$HYPEROS_OUT/images"
     else
         HYPEROS_IMG_DIR="$HYPEROS_OUT"
     fi
+    print_ok "Image directory: $HYPEROS_IMG_DIR"
 
     # Handle repack format: firmware-update/greeshan.img → super.img
     if [ -f "$HYPEROS_OUT/firmware-update/greeshan.img" ]; then
@@ -306,11 +310,33 @@ EOF
     if [ -f "$HYPEROS_IMG_DIR/super.img" ]; then
         print_step "Extracting HyperOS super.img"
         mkdir -p "$HYPEROS_IMG_DIR/super_out"
+        local IMG_TYPE
+        IMG_TYPE=$(file -b "$HYPEROS_IMG_DIR/super.img" | head -1)
+        print_ok "Super image type: $IMG_TYPE"
         if command -v lpunpack &>/dev/null; then
             lpunpack "$HYPEROS_IMG_DIR/super.img" "$HYPEROS_IMG_DIR/super_out/" 2>&1 || true
         fi
         if [ ! -f "$HYPEROS_IMG_DIR/super_out/system.img" ]; then
-            extract_super_python "$HYPEROS_IMG_DIR/super.img" "$HYPEROS_IMG_DIR/super_out"
+            extract_super_python "$HYPEROS_IMG_DIR/super.img" "$HYPEROS_IMG_DIR/super_out" || true
+        fi
+        if [ ! -f "$HYPEROS_IMG_DIR/super_out/system.img" ]; then
+            print_warn "lpunpack failed, trying raw mount"
+            local SUPER_MNT="$HYPEROS_IMG_DIR/super_mount"
+            mkdir -p "$SUPER_MNT"
+            if sudo mount -o loop,ro "$HYPEROS_IMG_DIR/super.img" "$SUPER_MNT" 2>/dev/null; then
+                print_ok "Mounted super.img - looking for partitions"
+                ls -la "$SUPER_MNT/"
+                for subdir in system system_a system_ext system_ext_a; do
+                    if [ -d "$SUPER_MNT/$subdir" ]; then
+                        print_ok "Found $subdir in mounted super"
+                    fi
+                done
+                sudo umount "$SUPER_MNT" 2>/dev/null || true
+            else
+                print_warn "Cannot mount super.img (may need LP header restoration)"
+                print_warn "Super image first 64 bytes:"
+                hexdump -C "$HYPEROS_IMG_DIR/super.img" 2>/dev/null | head -4 || od -A x -t x1z -N 64 "$HYPEROS_IMG_DIR/super.img" 2>/dev/null | head -4
+            fi
         fi
         ls -la "$HYPEROS_IMG_DIR/super_out/"
     fi
@@ -325,7 +351,14 @@ do_port() {
     print_step "Starting porting process"
 
     local SAMSUNG_OUT="$WORK_DIR/samsung/super_out"
-    local HYPEROS_OUT="$WORK_DIR/hyperos/images/super_out"
+    local HYPEROS_OUT
+    if [ -d "$WORK_DIR/hyperos/images/super_out" ]; then
+        HYPEROS_OUT="$WORK_DIR/hyperos/images/super_out"
+    elif [ -d "$WORK_DIR/hyperos/super_out" ]; then
+        HYPEROS_OUT="$WORK_DIR/hyperos/super_out"
+    else
+        HYPEROS_OUT="$WORK_DIR/hyperos/images/super_out"
+    fi
     local PORT_OUT="$WORK_DIR/port"
     mkdir -p "$PORT_OUT"
 
