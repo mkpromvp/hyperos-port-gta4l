@@ -93,7 +93,7 @@ extract_samsung() {
     fi
 
     # Decompress lz4 files
-    cd "$SAMSUNG_OUT"
+    pushd "$SAMSUNG_OUT" > /dev/null
     for f in *.lz4; do
         if [ -f "$f" ]; then
             print_step "Decompressing: $f"
@@ -116,6 +116,7 @@ extract_samsung() {
             fi
         done
     fi
+    popd > /dev/null
 
     # Extract super.img using lpunpack
     if [ -f "$SAMSUNG_OUT/super.img" ]; then
