@@ -92,7 +92,7 @@ jobs:
       
       - name: Verify and prepare Samsung firmware
         run: |
-          cd fw_samsung
+          cd $GITHUB_WORKSPACE/fw_samsung
           DL_FILE=$(ls *.zip *.enc4 *.tar* 2>/dev/null | head -1)
           echo "Downloaded file: $DL_FILE"
           file "$DL_FILE"
@@ -163,6 +163,7 @@ jobs:
 
       - name: Run porting process
         run: |
+          cd $GITHUB_WORKSPACE
           chmod +x scripts/port_hyperos.sh
           
           SAMSUNG_PATH=""
