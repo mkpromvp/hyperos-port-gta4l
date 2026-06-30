@@ -246,10 +246,10 @@ extract_super_img() {
 }
 
 # ============================================================
-# Step 2: Extract HyperOS firmware
+# Step 2: Extract HyperOS firmware (original recovery ROM)
 # ============================================================
 extract_hyperos() {
-    print_step "Extracting HyperOS firmware"
+    print_step "Extracting HyperOS firmware (original recovery ROM)"
 
     local HYPEROS_OUT="$WORK_DIR/hyperos"
     mkdir -p "$HYPEROS_OUT"
@@ -270,150 +270,61 @@ extract_hyperos() {
     print_debug "HYPEROS_FILE=$HYPEROS_FILE ($(stat -c '%s' "$HYPEROS_FILE" 2>/dev/null || echo '?') bytes)"
     print_debug "HYPEROS_FILE type: $(file -b "$HYPEROS_FILE" 2>/dev/null)"
 
-    case "$HYPEROS_FILE" in
-        *.tgz|*.tar.gz)
-            tar -xzf "$HYPEROS_FILE" -C "$HYPEROS_OUT/"
-            ;;
-        *.zip)
-            unzip -o "$HYPEROS_FILE" -d "$HYPEROS_OUT/"
-            ;;
-        *)
-            print_err "Unknown HyperOS firmware format"
-            exit 1
-            ;;
-    esac
+    # Unzip the recovery ROM
+    unzip -o "$HYPEROS_FILE" -d "$HYPEROS_OUT/"
+    print_ok "Recovery ROM extracted"
+    print_debug "Contents:"
+    find "$HYPEROS_OUT" -maxdepth 2 -type f | head -30
 
-    # Show extracted structure
-    print_ok "Extracted HyperOS zip"
-    print_debug "HyperOS output tree:"
-    find "$HYPEROS_OUT" -type f -o -type d | head -50
-
-    # Find image files
-    if [ -d "$HYPEROS_OUT/images" ]; then
-        HYPEROS_IMG_DIR="$HYPEROS_OUT/images"
-    else
-        HYPEROS_IMG_DIR="$HYPEROS_OUT"
-    fi
-    print_ok "Image directory: $HYPEROS_IMG_DIR"
-
-    # Handle repack format: firmware-update/greeshan.img → super.img
-    if [ -f "$HYPEROS_OUT/firmware-update/greeshan.img" ]; then
-        print_step "Found greeshan.img (repack format), copying to super.img"
-        print_debug "greeshan.img: $(stat -c '%s' "$HYPEROS_OUT/firmware-update/greeshan.img") bytes"
-        print_debug "greeshan.img type: $(file -b "$HYPEROS_OUT/firmware-update/greeshan.img" | head -1)"
-        print_debug "greeshan.img first 16 bytes hex: $(hexdump -C "$HYPEROS_OUT/firmware-update/greeshan.img" 2>/dev/null | head -2 || od -A x -t x1z -N 16 "$HYPEROS_OUT/firmware-update/greeshan.img" 2>/dev/null | head -1)"
-        cp "$HYPEROS_OUT/firmware-update/greeshan.img" "$HYPEROS_IMG_DIR/super.img"
-        print_ok "Copied greeshan.img → super.img ($(stat -c '%s' "$HYPEROS_IMG_DIR/super.img") bytes)"
-    fi
-
-    # If it's a recovery ROM with payload.bin
+    # Find payload.bin
+    local PAYLOAD_BIN=""
     if [ -f "$HYPEROS_OUT/payload.bin" ]; then
-        print_step "Extracting payload.bin"
-        python3 <<EOF
-import os, sys, struct
-
-payload_file = "$HYPEROS_OUT/payload.bin"
-out_dir = "$HYPEROS_OUT/images"
-os.makedirs(out_dir, exist_ok=True)
-
-with open(payload_file, "rb") as f:
-    magic = f.read(4)
-    if magic != b'CRXU':
-        print(f"[-] Not a valid payload.bin (magic: {magic.hex()})")
-        sys.exit(1)
-    
-    # Simple extraction - look for img files
-    f.seek(0)
-    data = f.read()
-    
-    # Find partitions by looking for EXT4 magic
-    img_ext = data.find(b'\xe2\x2a\x07\x22')  # spoof_ext4
-    if img_ext < 0:
-        img_ext = data.find(b'\x53\xEF')  # ext4 magic
-    
-    print(f"[+] payload.bin size: {len(data)} bytes")
-    print("[!] Full payload.bin extraction requires update_engine, using raw copy")
-    
-    # For now, copy the payload.bin for later processing
-    import shutil
-    shutil.copy(payload_file, os.path.join(out_dir, "payload.bin"))
-    print(f"[+] Copied payload.bin to {out_dir}/")
-EOF
+        PAYLOAD_BIN="$HYPEROS_OUT/payload.bin"
+    elif [ -f "$HYPEROS_OUT/images/payload.bin" ]; then
+        PAYLOAD_BIN="$HYPEROS_OUT/images/payload.bin"
     fi
+
+    if [ -z "$PAYLOAD_BIN" ]; then
+        print_err "payload.bin not found in recovery ROM"
+        find "$HYPEROS_OUT" -name "payload*" -type f 2>/dev/null
+        exit 1
+    fi
+
+    # Use payload-dumper from HyperOS-Port-Python tool
+    print_step "Extracting partitions from payload.bin using payload-dumper"
+    PAYLOAD_DUMPER=$(command -v payload-dumper || echo "$TOOLS_DIR/../hyperos_tool/bin/linux/x86_64/payload-dumper")
+    if [ ! -f "$PAYLOAD_DUMPER" ]; then
+        print_err "payload-dumper not found"
+        exit 1
+    fi
+    print_debug "Using payload-dumper: $PAYLOAD_DUMPER"
+
+    local HYPEROS_IMG_DIR="$HYPEROS_OUT/images"
+    mkdir -p "$HYPEROS_IMG_DIR"
+
+    "$PAYLOAD_DUMPER" --out "$HYPEROS_IMG_DIR" "$PAYLOAD_BIN" 2>&1
+    print_ok "payload-dumper completed"
 
     # Convert sparse images to raw
+    print_step "Converting sparse images to raw"
     if command -v simg2img &>/dev/null; then
         for img in "$HYPEROS_IMG_DIR"/*.img; do
             local IMG_TYPE
             IMG_TYPE=$(file -b "$img" | head -1)
             if echo "$IMG_TYPE" | grep -qi "sparse"; then
-                print_step "Converting sparse image: $(basename $img)"
+                print_step "Converting sparse: $(basename $img)"
                 mv "$img" "${img}.sparse"
                 simg2img "${img}.sparse" "$img"
             fi
         done
     fi
 
-    # Extract super.img if present
-    if [ -f "$HYPEROS_IMG_DIR/super.img" ]; then
-        print_step "Extracting HyperOS super.img"
-        mkdir -p "$HYPEROS_IMG_DIR/super_out"
-        local IMG_TYPE
-        IMG_TYPE=$(file -b "$HYPEROS_IMG_DIR/super.img" | head -1)
-        print_ok "Super image type: $IMG_TYPE"
-        print_debug "super.img size: $(stat -c '%s' "$HYPEROS_IMG_DIR/super.img") bytes"
-        print_debug "super.img first 64 bytes:"
-        hexdump -C "$HYPEROS_IMG_DIR/super.img" 2>/dev/null | head -4 || od -A x -t x1z -N 64 "$HYPEROS_IMG_DIR/super.img" 2>/dev/null | head -4
-        if command -v lpunpack &>/dev/null; then
-            print_debug "Running lpunpack..."
-            lpunpack "$HYPEROS_IMG_DIR/super.img" "$HYPEROS_IMG_DIR/super_out/" 2>&1 || true
-        fi
-        if [ ! -f "$HYPEROS_IMG_DIR/super_out/system.img" ]; then
-            print_debug "lpunpack did not produce system.img, trying Python extractor..."
-            print_debug "Python extractor cmd: python3 $TOOLS_DIR/extract_super.py $HYPEROS_IMG_DIR/super.img $HYPEROS_IMG_DIR/super_out"
-            extract_super_img "$HYPEROS_IMG_DIR/super.img" "$HYPEROS_IMG_DIR/super_out" || true
-        fi
-        if [ ! -f "$HYPEROS_IMG_DIR/super_out/system.img" ]; then
-            print_warn "Python extractor also failed, trying raw mount"
-            print_debug "Contents of super_out before mount:"
-            ls -la "$HYPEROS_IMG_DIR/super_out/" 2>/dev/null || echo "empty"
-            local SUPER_MNT="$HYPEROS_IMG_DIR/super_mount"
-            mkdir -p "$SUPER_MNT"
-            for MOUNT_OFFSET in 0 4096; do
-                if [ "$MOUNT_OFFSET" -eq 0 ]; then
-                    MOUNT_CMD="sudo mount -o loop,ro \"$HYPEROS_IMG_DIR/super.img\" \"$SUPER_MNT\""
-                else
-                    MOUNT_CMD="sudo mount -o loop,ro,offset=$MOUNT_OFFSET \"$HYPEROS_IMG_DIR/super.img\" \"$SUPER_MNT\""
-                fi
-                print_debug "Trying mount with offset $MOUNT_OFFSET..."
-                if eval $MOUNT_CMD 2>/dev/null; then
-                    print_ok "Mounted super.img at offset $MOUNT_OFFSET"
-                    ls -la "$SUPER_MNT/"
-                    for subdir in system system_a system_ext system_ext_a vendor vendor_a product product_a odm odm_a; do
-                        if [ -d "$SUPER_MNT/$subdir" ]; then
-                            print_ok "Found $subdir in mounted super"
-                            # Copy the subdir as a sparse image
-                            local PART_IMG="$HYPEROS_IMG_DIR/super_out/${subdir}.img"
-                            sudo mkisofs -o "$PART_IMG" "$SUPER_MNT/$subdir" 2>/dev/null || \
-                                sudo cp -a "$SUPER_MNT/$subdir" "${PART_IMG}.dir" 2>/dev/null || true
-                        fi
-                    done
-                    sudo umount "$SUPER_MNT" 2>/dev/null || true
-                    break
-                else
-                    print_debug "Mount failed at offset $MOUNT_OFFSET"
-                fi
-            done
-        fi
-        print_debug "Final super_out contents:"
-        ls -la "$HYPEROS_IMG_DIR/super_out/" 2>/dev/null || echo "empty"
-    fi
+    print_ok "HyperOS partitions extracted:"
+    ls -la "$HYPEROS_IMG_DIR/"*.img 2>/dev/null | awk '{print $5, $9}'
 
     # Clean up to save space
     print_step "Cleaning up HyperOS intermediates"
-    rm -f "$HYPEROS_IMG_DIR/super.img" 2>/dev/null || true
-    rm -f "$HYPEROS_OUT/firmware-update/greeshan.img" 2>/dev/null || true
-    # Delete HyperOS zip now that it's extracted
+    rm -f "$PAYLOAD_BIN" 2>/dev/null || true
     if [ -f "$HYPEROS_FW" ] && [[ "$HYPEROS_FW" == *.zip ]]; then
         rm -f "$HYPEROS_FW" 2>/dev/null || true
         print_ok "Deleted HyperOS zip to free space"
@@ -430,12 +341,14 @@ do_port() {
 
     local SAMSUNG_OUT="$WORK_DIR/samsung/super_out"
     local HYPEROS_OUT
-    if [ -d "$WORK_DIR/hyperos/super_out" ]; then
+    if [ -d "$WORK_DIR/hyperos/images" ]; then
+        HYPEROS_OUT="$WORK_DIR/hyperos/images"
+    elif [ -d "$WORK_DIR/hyperos/super_out" ]; then
         HYPEROS_OUT="$WORK_DIR/hyperos/super_out"
     elif [ -d "$WORK_DIR/hyperos/images/super_out" ]; then
         HYPEROS_OUT="$WORK_DIR/hyperos/images/super_out"
     else
-        HYPEROS_OUT="$WORK_DIR/hyperos/super_out"
+        HYPEROS_OUT="$WORK_DIR/hyperos/images"
         mkdir -p "$HYPEROS_OUT"
     fi
     mkdir -p "$PORT_OUT"
@@ -565,7 +478,7 @@ repack_super() {
         SUPER_SIZE=$(stat -f --format="%z" "$WORK_DIR/samsung/super.img" 2>/dev/null || stat -c "%s" "$WORK_DIR/samsung/super.img" 2>/dev/null || wc -c < "$WORK_DIR/samsung/super.img")
         print_ok "Original super.img size: $SUPER_SIZE bytes"
     else
-        SUPER_SIZE=$((8*1024*1024*1024))  # 8GB default for gta4l
+        SUPER_SIZE=$((6*1024*1024*1024))  # 6GB max for gta4l
         print_warn "Using default super size: $SUPER_SIZE"
     fi
 
