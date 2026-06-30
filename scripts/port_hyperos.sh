@@ -687,6 +687,8 @@ create_odin_tar() {
 # Main
 # ============================================================
 main() {
+    # Resolve to absolute path
+    OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd)"
     print_step "=== HyperOS Port for Samsung Galaxy Tab A7 (gta4l) ==="
     echo "  Samsung FW: $SAMSUNG_FW"
     echo "  HyperOS FW: $HYPEROS_FW"
