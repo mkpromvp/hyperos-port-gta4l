@@ -569,27 +569,28 @@ repack_super() {
     print_step "Creating super.img with lpmake"
 
     local LPMAKE_CMD="lpmake --metadata-slots 2 --metadata-size 65536 --super-name super --block-size 4096"
-    LPMAKE_CMD+=" --device super:$SUPER_SIZE"
+    LPMAKE_CMD+=" --device super:$SUPER_SIZE:4096"
+    LPMAKE_CMD+=" --group main:$SUPER_SIZE"
 
     # Add system partition
     if [ -f "$PORT_OUT/system.img" ]; then
-        LPMAKE_CMD+=" --partition system:readonly:$SYSTEM_SIZE:system_image"
+        LPMAKE_CMD+=" --partition system:readonly:$SYSTEM_SIZE:main"
         LPMAKE_CMD+=" --image system=$(readlink -f $PORT_OUT/system.img)"
     fi
 
     # Add vendor partition (from Samsung)
     if [ -f "$PORT_OUT/vendor_samsung.img" ]; then
         local VENDOR_FILE="$PORT_OUT/vendor_samsung.img"
-        LPMAKE_CMD+=" --partition vendor:readonly:$VENDOR_SIZE:vendor_image"
+        LPMAKE_CMD+=" --partition vendor:readonly:$VENDOR_SIZE:main"
         LPMAKE_CMD+=" --image vendor=$(readlink -f $VENDOR_FILE)"
     fi
 
     # Add product partition (from HyperOS)
     if [ -f "$PORT_OUT/product.img" ] && [ "$PRODUCT_SIZE" -gt 1048576 ]; then
-        LPMAKE_CMD+=" --partition product:readonly:$PRODUCT_SIZE:product_image"
+        LPMAKE_CMD+=" --partition product:readonly:$PRODUCT_SIZE:main"
         LPMAKE_CMD+=" --image product=$(readlink -f $PORT_OUT/product.img)"
     elif [ -f "$PORT_OUT/product_samsung.img" ] && [ "$PRODUCT_SIZE" -gt 1048576 ]; then
-        LPMAKE_CMD+=" --partition product:readonly:$PRODUCT_SIZE:product_image"
+        LPMAKE_CMD+=" --partition product:readonly:$PRODUCT_SIZE:main"
         LPMAKE_CMD+=" --image product=$(readlink -f $PORT_OUT/product_samsung.img)"
     fi
 
