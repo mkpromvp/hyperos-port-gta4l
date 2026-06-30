@@ -249,7 +249,7 @@ extract_super_img() {
 # Step 2: Extract HyperOS firmware (original recovery ROM)
 # ============================================================
 extract_hyperos() {
-    print_step "Extracting HyperOS firmware (original recovery ROM)"
+    print_step "Extracting HyperOS firmware"
 
     local HYPEROS_OUT="$WORK_DIR/hyperos"
     mkdir -p "$HYPEROS_OUT"
@@ -270,13 +270,15 @@ extract_hyperos() {
     print_debug "HYPEROS_FILE=$HYPEROS_FILE ($(stat -c '%s' "$HYPEROS_FILE" 2>/dev/null || echo '?') bytes)"
     print_debug "HYPEROS_FILE type: $(file -b "$HYPEROS_FILE" 2>/dev/null)"
 
-    # Unzip the recovery ROM
     unzip -o "$HYPEROS_FILE" -d "$HYPEROS_OUT/"
-    print_ok "Recovery ROM extracted"
+    print_ok "Firmware zip extracted"
     print_debug "Contents:"
     find "$HYPEROS_OUT" -maxdepth 2 -type f | head -30
 
-    # Find payload.bin
+    local HYPEROS_IMG_DIR="$HYPEROS_OUT/images"
+    mkdir -p "$HYPEROS_IMG_DIR"
+
+    # --- Method 1: payload.bin (original recovery ROM) ---
     local PAYLOAD_BIN=""
     if [ -f "$HYPEROS_OUT/payload.bin" ]; then
         PAYLOAD_BIN="$HYPEROS_OUT/payload.bin"
@@ -284,26 +286,56 @@ extract_hyperos() {
         PAYLOAD_BIN="$HYPEROS_OUT/images/payload.bin"
     fi
 
-    if [ -z "$PAYLOAD_BIN" ]; then
-        print_err "payload.bin not found in recovery ROM"
-        find "$HYPEROS_OUT" -name "payload*" -type f 2>/dev/null
-        exit 1
+    if [ -n "$PAYLOAD_BIN" ]; then
+        print_step "Found payload.bin, extracting with payload-dumper"
+        local PAYLOAD_DUMPER
+        PAYLOAD_DUMPER=$(command -v payload-dumper || echo "$TOOLS_DIR/../hyperos_tool/bin/linux/x86_64/payload-dumper")
+        if [ ! -f "$PAYLOAD_DUMPER" ]; then
+            print_err "payload-dumper not found"
+            exit 1
+        fi
+        "$PAYLOAD_DUMPER" --out "$HYPEROS_IMG_DIR" "$PAYLOAD_BIN" 2>&1
+        print_ok "payload-dumper completed"
+        rm -f "$PAYLOAD_BIN" 2>/dev/null || true
     fi
 
-    # Use payload-dumper from HyperOS-Port-Python tool
-    print_step "Extracting partitions from payload.bin using payload-dumper"
-    PAYLOAD_DUMPER=$(command -v payload-dumper || echo "$TOOLS_DIR/../hyperos_tool/bin/linux/x86_64/payload-dumper")
-    if [ ! -f "$PAYLOAD_DUMPER" ]; then
-        print_err "payload-dumper not found"
+    # --- Method 2: greeshan.img / super.img (repack / fastboot format) ---
+    if [ -z "$(ls "$HYPEROS_IMG_DIR"/*.img 2>/dev/null)" ]; then
+        local SUPER_IMG=""
+        if [ -f "$HYPEROS_OUT/firmware-update/greeshan.img" ]; then
+            SUPER_IMG="$HYPEROS_OUT/firmware-update/greeshan.img"
+        elif [ -f "$HYPEROS_OUT/images/super.img" ]; then
+            SUPER_IMG="$HYPEROS_OUT/images/super.img"
+        elif [ -f "$HYPEROS_OUT/super.img" ]; then
+            SUPER_IMG="$HYPEROS_OUT/super.img"
+        fi
+
+        if [ -n "$SUPER_IMG" ]; then
+            print_step "Found super image, extracting with Python lpunpack"
+            local LPUNPACK_PY
+            LPUNPACK_PY=$(ls "$TOOLS_DIR/../hyperos_tool/src/utils/lpunpack.py" 2>/dev/null || echo "")
+            if [ -z "$LPUNPACK_PY" ]; then
+                print_warn "Python lpunpack not found, trying binary lpunpack"
+                lpunpack "$SUPER_IMG" "$HYPEROS_IMG_DIR/" 2>&1 || {
+                    print_err "Both lpunpack methods failed"
+                    find "$HYPEROS_OUT" -type f | head -20
+                    exit 1
+                }
+            else
+                print_debug "Using Python lpunpack: $LPUNPACK_PY"
+                python3 "$LPUNPACK_PY" "$SUPER_IMG" "$HYPEROS_IMG_DIR" 2>&1
+            fi
+            print_ok "lpunpack completed"
+            rm -f "$SUPER_IMG" 2>/dev/null || true
+        fi
+    fi
+
+    # Verify we got images
+    if [ -z "$(ls "$HYPEROS_IMG_DIR"/*.img 2>/dev/null)" ]; then
+        print_err "No partition images extracted from HyperOS firmware"
+        find "$HYPEROS_OUT" -type f | head -30
         exit 1
     fi
-    print_debug "Using payload-dumper: $PAYLOAD_DUMPER"
-
-    local HYPEROS_IMG_DIR="$HYPEROS_OUT/images"
-    mkdir -p "$HYPEROS_IMG_DIR"
-
-    "$PAYLOAD_DUMPER" --out "$HYPEROS_IMG_DIR" "$PAYLOAD_BIN" 2>&1
-    print_ok "payload-dumper completed"
 
     # Convert sparse images to raw
     print_step "Converting sparse images to raw"
@@ -315,6 +347,7 @@ extract_hyperos() {
                 print_step "Converting sparse: $(basename $img)"
                 mv "$img" "${img}.sparse"
                 simg2img "${img}.sparse" "$img"
+                rm -f "${img}.sparse" 2>/dev/null || true
             fi
         done
     fi
@@ -322,13 +355,12 @@ extract_hyperos() {
     print_ok "HyperOS partitions extracted:"
     ls -la "$HYPEROS_IMG_DIR/"*.img 2>/dev/null | awk '{print $5, $9}'
 
-    # Clean up to save space
-    print_step "Cleaning up HyperOS intermediates"
-    rm -f "$PAYLOAD_BIN" 2>/dev/null || true
+    # Clean up zip now that we have images
     if [ -f "$HYPEROS_FW" ] && [[ "$HYPEROS_FW" == *.zip ]]; then
         rm -f "$HYPEROS_FW" 2>/dev/null || true
         print_ok "Deleted HyperOS zip to free space"
     fi
+    rm -rf "$HYPEROS_OUT/firmware-update" 2>/dev/null || true
     df -h
     print_ok "HyperOS firmware extracted"
 }
@@ -340,6 +372,7 @@ do_port() {
     print_step "Starting porting process"
 
     local SAMSUNG_OUT="$WORK_DIR/samsung/super_out"
+    local PORT_OUT="$WORK_DIR/port"
     local HYPEROS_OUT
     if [ -d "$WORK_DIR/hyperos/images" ]; then
         HYPEROS_OUT="$WORK_DIR/hyperos/images"

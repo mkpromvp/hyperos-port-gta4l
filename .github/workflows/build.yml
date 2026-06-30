@@ -23,8 +23,10 @@ on:
 env:
   DEVICE: gta4l
   MODEL: SM-T505N
+  # SourceForge greeshan repack (fast CDN ~19MB/s on GA)
+  HYPEROS_SF_URL: "https://master.dl.sourceforge.net/project/miui-greeshan-repack/HyperOS/Xiaomi-PadSE-xun/greeshan.ru_XiaomiPadSE_xun_V1.0.7.0.UMUMIXM_14.0_7349f.zip?viasf=1"
+  # Original recovery ROM mirror (fallback if SourceForge fails)
   HYPEROS_RECOVERY_URL: "https://bigota.d.miui.com/OS1.0.7.0.UMUMIXM/miui_XUNGlobal_OS1.0.7.0.UMUMIXM_05fc1ffc2b_14.0.zip"
-  HYPEROS_MD5: "05fc1ffc2bc8fa6f095447b49145dec9"
 
 concurrency:
   group: port-${{ github.ref }}
@@ -73,21 +75,29 @@ jobs:
           payload-dumper --help 2>&1 | head -2 || echo "payload-dumper ready"
           lpunpack --help 2>&1 | head -2 || echo "lpunpack ready"
 
-      - name: Download original HyperOS recovery ROM
+      - name: Download HyperOS firmware
         run: |
           mkdir -p fw_hyperos
-          echo "Downloading original Xiaomi recovery ROM with payload.bin..."
+          # Try SourceForge first (fast CDN on GA)
+          echo "Downloading from SourceForge (greeshan repack)..."
           aria2c -x 8 -s 8 --max-connection-per-server=8 --connect-timeout=30 \
-            --timeout=600 --retry-wait=5 --max-tries=5 --allow-overwrite=true \
-            --dir=fw_hyperos --out=hyperos_fw.zip "${{ env.HYPEROS_RECOVERY_URL }}" 2>&1
+            --timeout=600 --retry-wait=5 --max-tries=3 --allow-overwrite=true \
+            --dir=fw_hyperos --out=hyperos_fw.zip "${{ env.HYPEROS_SF_URL }}" 2>&1 || {
+            echo "SourceForge failed, trying original recovery ROM..."
+            rm -f fw_hyperos/hyperos_fw.zip
+            aria2c -x 8 -s 8 --max-connection-per-server=8 --connect-timeout=30 \
+              --timeout=600 --retry-wait=5 --max-tries=5 --allow-overwrite=true \
+              --dir=fw_hyperos --out=hyperos_fw.zip "${{ env.HYPEROS_RECOVERY_URL }}" 2>&1
+          }
           
           if [ ! -f fw_hyperos/hyperos_fw.zip ]; then
             echo "Download failed"
+            ls -la fw_hyperos/
             exit 1
           fi
+          echo "HyperOS firmware downloaded:"
           ls -la fw_hyperos/
           echo "MD5: $(md5sum fw_hyperos/hyperos_fw.zip | cut -d' ' -f1)"
-          echo "HyperOS recovery ROM downloaded"
 
       - name: Download Samsung firmware
         run: |
