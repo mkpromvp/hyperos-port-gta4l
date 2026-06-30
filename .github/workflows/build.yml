@@ -15,6 +15,10 @@ on:
         description: 'Upload result to GitHub Release'
         type: boolean
         default: false
+      gofile_upload:
+        description: 'Upload to GoFile.io'
+        type: boolean
+        default: true
 
 env:
   DEVICE: gta4l
@@ -22,9 +26,14 @@ env:
   HYPEROS_SF_URL: "https://master.dl.sourceforge.net/project/miui-greeshan-repack/HyperOS/Xiaomi-PadSE-xun/greeshan.ru_XiaomiPadSE_xun_V1.0.7.0.UMUMIXM_14.0_7349f.zip?viasf=1"
   HYPEROS_SF_FALLBACK: "https://downloads.sourceforge.net/project/miui-greeshan-repack/HyperOS/Xiaomi-PadSE-xun/greeshan.ru_XiaomiPadSE_xun_V1.0.7.0.UMUMIXM_14.0_7349f.zip"
 
+concurrency:
+  group: port-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   port:
     runs-on: ubuntu-24.04
+    timeout-minutes: 360
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -205,11 +214,45 @@ jobs:
           retention-days: 3
           if-no-files-found: ignore
 
+      - name: Upload to GoFile.io
+        if: inputs.gofile_upload == true
+        run: |
+          set -e
+          # Find output files
+          OUTPUT_FILES=(./output/*.tar.md5)
+          if [ ${#OUTPUT_FILES[@]} -eq 0 ] || [ ! -f "${OUTPUT_FILES[0]}" ]; then
+            echo "No output tar.md5 files found, checking for other files..."
+            OUTPUT_FILES=(./output/*)
+          fi
+          
+          if [ ${#OUTPUT_FILES[@]} -eq 0 ] || [ ! -f "${OUTPUT_FILES[0]}" ]; then
+            echo "No output files found to upload"
+            exit 1
+          fi
+          
+          echo "Files to upload: ${OUTPUT_FILES[@]}"
+          
+          # Get best GoFile server
+          SERVER=$(curl -s https://api.gofile.io/servers | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['data']['servers'][0]['name'])" 2>/dev/null || echo "store1")
+          echo "GoFile server: $SERVER"
+          
+          # Upload each file and collect links
+          for FILE in "${OUTPUT_FILES[@]}"; do
+            echo "Uploading $FILE to GoFile..."
+            RESPONSE=$(curl -s -F "file=@$FILE" "https://$SERVER.gofile.io/uploadFile")
+            echo "Response: $RESPONSE"
+            DOWNLOAD_LINK=$(echo "$RESPONSE" | python3 -c "import sys,json; r=json.load(sys.stdin); print(r['data']['downloadPage'])" 2>/dev/null || echo "Failed to parse link")
+            echo "Download link: $DOWNLOAD_LINK"
+            echo "GOFILE_LINK=$DOWNLOAD_LINK" >> $GITHUB_ENV
+          done
+
       - name: Upload to GitHub Release
         if: inputs.upload_release == true
         run: |
           TAG="hyperos-port-$(date +%Y%m%d-%H%M%S)"
-          gh release create "$TAG" ./output/*.tar.md5 --title "HyperOS Port ${{ env.MODEL }} $TAG" --notes "Automated HyperOS 1.0.7.0 port for ${{ env.MODEL }} (gta4l)"
+          gh release create "$TAG" ./output/*.tar.md5 --title "HyperOS Port ${{ env.MODEL }} $TAG" --notes "Automated HyperOS 1.0.7.0 port for ${{ env.MODEL }} (gta4l)
+          
+          GoFile download: ${{ env.GOFILE_LINK || 'N/A' }}"
           echo "Release created: $TAG"
 
       - name: Final cleanup
