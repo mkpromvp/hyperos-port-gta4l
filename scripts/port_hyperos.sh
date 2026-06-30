@@ -137,6 +137,12 @@ extract_samsung() {
     rm -f "$SAMSUNG_OUT/super.img.lz4" 2>/dev/null || true
     rm -f "$SAMSUNG_OUT/super.img.sparse" 2>/dev/null || true
     for f in "$SAMSUNG_OUT"/*.lz4; do [ -f "$f" ] && rm -f "$f"; done 2>/dev/null || true
+    # Delete AP tar now that it's extracted
+    if [ -f "$SAMSUNG_FW" ] && [[ "$SAMSUNG_FW" == *.tar.md5 ]]; then
+        rm -f "$SAMSUNG_FW" 2>/dev/null || true
+        print_ok "Deleted AP tar to free space"
+    fi
+    df -h
     print_ok "Samsung firmware extracted"
 }
 
@@ -290,6 +296,11 @@ EOF
     print_step "Cleaning up HyperOS intermediates"
     rm -f "$HYPEROS_IMG_DIR/super.img" 2>/dev/null || true
     rm -f "$HYPEROS_OUT/firmware-update/greeshan.img" 2>/dev/null || true
+    # Delete HyperOS zip now that it's extracted
+    if [ -f "$HYPEROS_FW" ] && [[ "$HYPEROS_FW" == *.zip ]]; then
+        rm -f "$HYPEROS_FW" 2>/dev/null || true
+        print_ok "Deleted HyperOS zip to free space"
+    fi
     df -h
     print_ok "HyperOS firmware extracted"
 }
