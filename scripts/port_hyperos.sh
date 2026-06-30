@@ -135,73 +135,13 @@ extract_samsung() {
     print_ok "Samsung firmware extracted"
 }
 
-# Python fallback for super.img extraction
+# Python fallback for super.img extraction (handles LP and raw ext4 images)
 extract_super_python() {
     local SUPER_IMG="$1"
     local OUT_DIR="$2"
     mkdir -p "$OUT_DIR"
 
-    python3 <<EOF
-import struct, os, sys
-
-super_img = open("$SUPER_IMG", "rb")
-out_dir = "$OUT_DIR"
-
-# Read magic
-magic = super_img.read(4)
-if magic != b'\x69\x32\x33\x34':  # LP_MAGIC
-    print("[-] Not a valid super image (LP_MAGIC not found)")
-    print(f"    Magic: {magic.hex()}")
-    super_img.close()
-    sys.exit(1)
-
-# Read header (simple parsing)
-super_img.seek(0)
-header_fmt = '<4sIIIIIIIIIIIIIII'
-header_size = struct.calcsize(header_fmt)
-header_data = super_img.read(header_size)
-magic, version, lp_hdr_sz, hdr_sz_bt, partitions, max_vol_name, extent_entries, total_extents, first_lun, last_lun, alignment, alignment_offset, block_size, super_sz = struct.unpack_from(header_fmt, header_data)
-
-print(f"[+] Super image: {super_sz} bytes, {partitions} partitions, block_size={block_size}")
-
-# Read partition table
-super_img.seek(lp_hdr_sz)
-for i in range(partitions):
-    part_entry = super_img.read(64)  # sizeof(LpMetadataPartition)
-    part_name = part_entry[0:36].split(b'\x00')[0].decode('ascii', errors='replace')
-    part_attr, part_extents = struct.unpack_from('<II', part_entry, 36)
-    part_gi, part_idx = struct.unpack_from('<II', part_entry, 44)
-    
-    # Seek to extent table
-    super_img.seek(lp_hdr_sz + header_size + i * 64 + 52)
-    num_extents = struct.unpack('<I', super_img.read(4))[0]
-    
-    # Read extents
-    for e in range(num_extents):
-        extent_entry = super_img.read(32)  # sizeof(LpMetadataExtent)
-        num_blocks, ext_flags, start_sector = struct.unpack_from('<I12xQ16x', extent_entry)
-        
-        offset = start_sector * 512
-        size = num_blocks * block_size
-        
-        print(f"[+] Extracting: {part_name} ({size} bytes at {offset})")
-        
-        out_file = os.path.join(out_dir, f"{part_name}.img")
-        with open(out_file, 'wb') as f:
-            super_img.seek(offset)
-            remaining = size
-            while remaining > 0:
-                chunk_size = min(remaining, 1024*1024*64)  # 64MB chunks
-                data = super_img.read(chunk_size)
-                if not data:
-                    break
-                f.write(data)
-                remaining -= len(data)
-        print(f"    -> {out_file} ({os.path.getsize(out_file)} bytes)")
-
-super_img.close()
-print(f"[+] Done extracting super.img to {out_dir}")
-EOF
+    python3 "$TOOLS_DIR/extract_super.py" "$SUPER_IMG" "$OUT_DIR"
 }
 
 # ============================================================
