@@ -209,10 +209,12 @@ jobs:
           echo "=== Disk before cleanup ==="
           df -h
           # Remove downloaded zips - they're extracted now
-          rm -f fw_hyperos/hyperos_fw.zip 2>/dev/null || true
-          rm -f fw_samsung/samsung_ap.tar.md5 2>/dev/null || true
-          rm -f fw_samsung/samsung_fw.zip 2>/dev/null || true
+          # Keep samsung_ap.tar.md5! Delete original zip and extracted dir
+          rm -f fw_samsung/SM-T505N_*.zip 2>/dev/null || true
+          rm -f fw_samsung/*.enc4 2>/dev/null || true
           rm -rf fw_samsung/extracted 2>/dev/null || true
+          # Delete HyperOS zip now that it's extracted
+          rm -f fw_hyperos/hyperos_fw.zip 2>/dev/null || true
           echo "=== Disk after zip cleanup ==="
           df -h
           echo "Freed ~4GB from firmware zips"
