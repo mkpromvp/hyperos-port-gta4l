@@ -568,7 +568,7 @@ repack_super() {
     # Create super.img using lpmake
     print_step "Creating super.img with lpmake"
 
-    local LPMAKE_CMD="lpmake --metadata-size 65536 --super-name super --block-size 4096"
+    local LPMAKE_CMD="lpmake --metadata-slots 2 --metadata-size 65536 --super-name super --block-size 4096"
     LPMAKE_CMD+=" --device super:$SUPER_SIZE"
 
     # Add system partition
