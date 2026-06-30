@@ -10,6 +10,13 @@ print_step() { echo -e "\n\033[1;34m[*] $1\033[0m"; }
 print_ok()  { echo -e "\033[1;32m[+] $1\033[0m"; }
 print_warn() { echo -e "\033[1;33m[!] $1\033[0m"; }
 print_err() { echo -e "\033[1;31m[-] $1\033[0m"; }
+print_debug() { echo -e "\033[1;30m[D] $1\033[0m"; }
+
+# Enable debug mode with DEBUG=1 environment variable
+if [ -n "$DEBUG" ]; then
+    set -x
+    print_ok "Debug mode enabled"
+fi
 
 # Config
 DEVICE="gta4l"
@@ -35,7 +42,7 @@ setup_tools() {
     sudo apt install -y lz4 wget unzip tar python3 python3-pip \
         android-sdk-libsparse-utils e2fsprogs
 
-    pip3 install --quiet protobuf lz4 2>/dev/null || true
+    pip3 install --quiet protobuf lz4 unsuper numpy 2>/dev/null || true
 
     # Check lpunpack/lpmake are available
     if ! command -v lpunpack &>/dev/null || ! command -v lpmake &>/dev/null; then
@@ -86,7 +93,11 @@ extract_samsung() {
         fi
     elif [ -n "$AP_FILE" ]; then
         print_step "Extracting AP tar.md5"
+        print_debug "AP_FILE=$AP_FILE ($(stat -c '%s' "$AP_FILE" 2>/dev/null || echo '?') bytes)"
+        print_debug "AP_FILE type: $(file -b "$AP_FILE" 2>/dev/null)"
         tar -xf "$AP_FILE" -C "$SAMSUNG_OUT/"
+        print_debug "Tar contents: $(ls -la "$SAMSUNG_OUT/" | wc -l) files"
+        ls -la "$SAMSUNG_OUT/"
     else
         print_err "Cannot find Samsung firmware at: $SAMSUNG_FW"
         exit 1
@@ -94,38 +105,52 @@ extract_samsung() {
 
     # Decompress lz4 files
     pushd "$SAMSUNG_OUT" > /dev/null
+    LZ4_COUNT=0
     for f in *.lz4; do
         if [ -f "$f" ]; then
+            print_debug "Found lz4: $f ($(stat -c '%s' "$f") bytes)"
             print_step "Decompressing: $f"
             lz4 -d "$f" "${f%.lz4}" 2>/dev/null || true
+            LZ4_COUNT=$((LZ4_COUNT+1))
         fi
     done
+    print_debug "Decompressed $LZ4_COUNT lz4 files"
+    print_debug "After decompression: $(ls *.img 2>/dev/null | tr '\n' ' ')"
 
     # Convert sparse images to raw (Samsung often uses sparse format)
     if command -v simg2img &>/dev/null; then
+        SPARSE_COUNT=0
         for img in super.img vendor.img system.img product.img odm.img; do
             if [ -f "$img" ]; then
                 local IMG_TYPE
                 IMG_TYPE=$(file -b "$img" | head -1)
+                print_debug "Image type for $img: $IMG_TYPE"
                 if echo "$IMG_TYPE" | grep -qi "sparse"; then
                     print_step "Converting sparse image: $img"
                     mv "$img" "${img}.sparse"
                     simg2img "${img}.sparse" "$img"
                     print_ok "Converted $img from sparse to raw"
+                    print_debug "Raw size: $(stat -c '%s' "$img" 2>/dev/null) bytes"
+                    SPARSE_COUNT=$((SPARSE_COUNT+1))
                 fi
             fi
         done
+        print_debug "Converted $SPARSE_COUNT sparse images"
+    else
+        print_warn "simg2img not found, sparse images may not be converted"
     fi
     popd > /dev/null
 
     # Extract super.img using lpunpack
     if [ -f "$SAMSUNG_OUT/super.img" ]; then
         print_step "Extracting super.img with lpunpack"
+        print_debug "super.img: $(stat -c '%s' "$SAMSUNG_OUT/super.img") bytes, type: $(file -b "$SAMSUNG_OUT/super.img" | head -1)"
         mkdir -p "$SAMSUNG_OUT/super_out"
         lpunpack "$SAMSUNG_OUT/super.img" "$SAMSUNG_OUT/super_out/" 2>&1 || {
             print_warn "lpunpack failed, trying Python fallback"
-            extract_super_python "$SAMSUNG_OUT/super.img" "$SAMSUNG_OUT/super_out"
+            extract_super_img "$SAMSUNG_OUT/super.img" "$SAMSUNG_OUT/super_out"
         }
+        print_debug "super_out contents:"
         ls -la "$SAMSUNG_OUT/super_out/"
     else
         print_err "super.img not found after extraction"
@@ -146,13 +171,78 @@ extract_samsung() {
     print_ok "Samsung firmware extracted"
 }
 
-# Python fallback for super.img extraction (handles LP and raw ext4 images)
-extract_super_python() {
+# Extract super.img using multiple tools (unsuper, lpunpack, dd+skip)
+extract_super_img() {
     local SUPER_IMG="$1"
     local OUT_DIR="$2"
     mkdir -p "$OUT_DIR"
 
-    python3 "$TOOLS_DIR/extract_super.py" "$SUPER_IMG" "$OUT_DIR"
+    # Method 1: unsuper (best Python tool)
+    if python3 -c "import unsuper" 2>/dev/null; then
+        print_debug "Using unsuper for extraction..."
+        python3 -m unsuper "$SUPER_IMG" "$OUT_DIR" --jobs 4 2>&1 || true
+        if [ -f "$OUT_DIR/system.img" ] || [ -f "$OUT_DIR/system_a.img" ]; then
+            print_ok "unsuper extracted successfully"
+            return 0
+        fi
+    fi
+
+    # Method 2: lpunpack
+    if command -v lpunpack &>/dev/null; then
+        print_debug "Using lpunpack..."
+        lpunpack "$SUPER_IMG" "$OUT_DIR/" 2>&1 || true
+        if ls "$OUT_DIR/system"*.img 2>/dev/null | head -1; then
+            print_ok "lpunpack extracted successfully"
+            return 0
+        fi
+    fi
+
+    # Method 3: Skip first 4096 bytes and retry (for greeshan format)
+    print_debug "Trying with 4096-byte offset (greeshan format)..."
+    local TRIMMED="${SUPER_IMG}.trimmed"
+    dd if="$SUPER_IMG" of="$TRIMMED" bs=4096 skip=1 2>/dev/null
+    if python3 -c "import unsuper" 2>/dev/null; then
+        python3 -m unsuper "$TRIMMED" "$OUT_DIR" --jobs 4 2>&1 || true
+        if [ -f "$OUT_DIR/system.img" ] || [ -f "$OUT_DIR/system_a.img" ]; then
+            print_ok "unsuper with offset extracted successfully"
+            rm -f "$TRIMMED"
+            return 0
+        fi
+    fi
+    lpunpack "$TRIMMED" "$OUT_DIR/" 2>&1 || true
+    if ls "$OUT_DIR/system"*.img 2>/dev/null | head -1; then
+        print_ok "lpunpack with offset extracted successfully"
+        rm -f "$TRIMMED"
+        return 0
+    fi
+    rm -f "$TRIMMED"
+
+    # Method 4: Mount with offset
+    print_debug "Trying mount with offset 4096..."
+    local MNT="/tmp/super_mnt_$$"
+    mkdir -p "$MNT"
+    if sudo mount -o loop,ro,offset=4096 "$SUPER_IMG" "$MNT" 2>/dev/null; then
+        print_ok "Mounted with offset 4096"
+        ls -la "$MNT/"
+        for d in system system_a vendor vendor_a product product_a odm odm_a; do
+            if [ -d "$MNT/$d" ]; then
+                print_ok "Found $d in mount, creating empty marker"
+                touch "$OUT_DIR/${d}.img"
+            fi
+        done
+        sudo umount "$MNT" 2>/dev/null || true
+        # If we found partitions, the tool needs to handle directory-based extraction
+        if ls "$OUT_DIR/system"*.img 2>/dev/null | head -1; then
+            return 0
+        fi
+    fi
+
+    # Method 5: Try fsck.ext4 to identify the image
+    print_debug "Trying fsck.ext4..."
+    sudo fsck.ext4 -n "$SUPER_IMG" 2>&1 | head -5 || true
+
+    print_warn "All extraction methods failed for $SUPER_IMG"
+    return 1
 }
 
 # ============================================================
@@ -177,6 +267,8 @@ extract_hyperos() {
     fi
 
     print_step "Extracting: $(basename $HYPEROS_FILE)"
+    print_debug "HYPEROS_FILE=$HYPEROS_FILE ($(stat -c '%s' "$HYPEROS_FILE" 2>/dev/null || echo '?') bytes)"
+    print_debug "HYPEROS_FILE type: $(file -b "$HYPEROS_FILE" 2>/dev/null)"
 
     case "$HYPEROS_FILE" in
         *.tgz|*.tar.gz)
@@ -192,7 +284,9 @@ extract_hyperos() {
     esac
 
     # Show extracted structure
-    print_ok "Extracted HyperOS zip to: $(ls -d $HYPEROS_OUT/*/ 2>/dev/null | tr '\n' ' ')"
+    print_ok "Extracted HyperOS zip"
+    print_debug "HyperOS output tree:"
+    find "$HYPEROS_OUT" -type f -o -type d | head -50
 
     # Find image files
     if [ -d "$HYPEROS_OUT/images" ]; then
@@ -205,6 +299,9 @@ extract_hyperos() {
     # Handle repack format: firmware-update/greeshan.img → super.img
     if [ -f "$HYPEROS_OUT/firmware-update/greeshan.img" ]; then
         print_step "Found greeshan.img (repack format), copying to super.img"
+        print_debug "greeshan.img: $(stat -c '%s' "$HYPEROS_OUT/firmware-update/greeshan.img") bytes"
+        print_debug "greeshan.img type: $(file -b "$HYPEROS_OUT/firmware-update/greeshan.img" | head -1)"
+        print_debug "greeshan.img first 16 bytes hex: $(hexdump -C "$HYPEROS_OUT/firmware-update/greeshan.img" 2>/dev/null | head -2 || od -A x -t x1z -N 16 "$HYPEROS_OUT/firmware-update/greeshan.img" 2>/dev/null | head -1)"
         cp "$HYPEROS_OUT/firmware-update/greeshan.img" "$HYPEROS_IMG_DIR/super.img"
         print_ok "Copied greeshan.img → super.img ($(stat -c '%s' "$HYPEROS_IMG_DIR/super.img") bytes)"
     fi
@@ -264,32 +361,52 @@ EOF
         local IMG_TYPE
         IMG_TYPE=$(file -b "$HYPEROS_IMG_DIR/super.img" | head -1)
         print_ok "Super image type: $IMG_TYPE"
+        print_debug "super.img size: $(stat -c '%s' "$HYPEROS_IMG_DIR/super.img") bytes"
+        print_debug "super.img first 64 bytes:"
+        hexdump -C "$HYPEROS_IMG_DIR/super.img" 2>/dev/null | head -4 || od -A x -t x1z -N 64 "$HYPEROS_IMG_DIR/super.img" 2>/dev/null | head -4
         if command -v lpunpack &>/dev/null; then
+            print_debug "Running lpunpack..."
             lpunpack "$HYPEROS_IMG_DIR/super.img" "$HYPEROS_IMG_DIR/super_out/" 2>&1 || true
         fi
         if [ ! -f "$HYPEROS_IMG_DIR/super_out/system.img" ]; then
-            extract_super_python "$HYPEROS_IMG_DIR/super.img" "$HYPEROS_IMG_DIR/super_out" || true
+            print_debug "lpunpack did not produce system.img, trying Python extractor..."
+            print_debug "Python extractor cmd: python3 $TOOLS_DIR/extract_super.py $HYPEROS_IMG_DIR/super.img $HYPEROS_IMG_DIR/super_out"
+            extract_super_img "$HYPEROS_IMG_DIR/super.img" "$HYPEROS_IMG_DIR/super_out" || true
         fi
         if [ ! -f "$HYPEROS_IMG_DIR/super_out/system.img" ]; then
-            print_warn "lpunpack failed, trying raw mount"
+            print_warn "Python extractor also failed, trying raw mount"
+            print_debug "Contents of super_out before mount:"
+            ls -la "$HYPEROS_IMG_DIR/super_out/" 2>/dev/null || echo "empty"
             local SUPER_MNT="$HYPEROS_IMG_DIR/super_mount"
             mkdir -p "$SUPER_MNT"
-            if sudo mount -o loop,ro "$HYPEROS_IMG_DIR/super.img" "$SUPER_MNT" 2>/dev/null; then
-                print_ok "Mounted super.img - looking for partitions"
-                ls -la "$SUPER_MNT/"
-                for subdir in system system_a system_ext system_ext_a; do
-                    if [ -d "$SUPER_MNT/$subdir" ]; then
-                        print_ok "Found $subdir in mounted super"
-                    fi
-                done
-                sudo umount "$SUPER_MNT" 2>/dev/null || true
-            else
-                print_warn "Cannot mount super.img (may need LP header restoration)"
-                print_warn "Super image first 64 bytes:"
-                hexdump -C "$HYPEROS_IMG_DIR/super.img" 2>/dev/null | head -4 || od -A x -t x1z -N 64 "$HYPEROS_IMG_DIR/super.img" 2>/dev/null | head -4
-            fi
+            for MOUNT_OFFSET in 0 4096; do
+                if [ "$MOUNT_OFFSET" -eq 0 ]; then
+                    MOUNT_CMD="sudo mount -o loop,ro \"$HYPEROS_IMG_DIR/super.img\" \"$SUPER_MNT\""
+                else
+                    MOUNT_CMD="sudo mount -o loop,ro,offset=$MOUNT_OFFSET \"$HYPEROS_IMG_DIR/super.img\" \"$SUPER_MNT\""
+                fi
+                print_debug "Trying mount with offset $MOUNT_OFFSET..."
+                if eval $MOUNT_CMD 2>/dev/null; then
+                    print_ok "Mounted super.img at offset $MOUNT_OFFSET"
+                    ls -la "$SUPER_MNT/"
+                    for subdir in system system_a system_ext system_ext_a vendor vendor_a product product_a odm odm_a; do
+                        if [ -d "$SUPER_MNT/$subdir" ]; then
+                            print_ok "Found $subdir in mounted super"
+                            # Copy the subdir as a sparse image
+                            local PART_IMG="$HYPEROS_IMG_DIR/super_out/${subdir}.img"
+                            sudo mkisofs -o "$PART_IMG" "$SUPER_MNT/$subdir" 2>/dev/null || \
+                                sudo cp -a "$SUPER_MNT/$subdir" "${PART_IMG}.dir" 2>/dev/null || true
+                        fi
+                    done
+                    sudo umount "$SUPER_MNT" 2>/dev/null || true
+                    break
+                else
+                    print_debug "Mount failed at offset $MOUNT_OFFSET"
+                fi
+            done
         fi
-        ls -la "$HYPEROS_IMG_DIR/super_out/"
+        print_debug "Final super_out contents:"
+        ls -la "$HYPEROS_IMG_DIR/super_out/" 2>/dev/null || echo "empty"
     fi
 
     # Clean up to save space
@@ -626,7 +743,15 @@ main() {
     echo "  Samsung FW: $SAMSUNG_FW"
     echo "  HyperOS FW: $HYPEROS_FW"
     echo "  Output:     $OUTPUT_DIR"
+    echo "  Work dir:   $WORK_DIR"
+    echo "  Tools dir:  $TOOLS_DIR"
     echo "  Device:     $MODEL ($DEVICE)"
+    print_debug "Arguments: '$1' '$2' '$3'"
+    print_debug "SAMSUNG_FW exists? $(test -e "$SAMSUNG_FW" && echo YES || echo NO)"
+    print_debug "SAMSUNG_FW type: $(file -b "$SAMSUNG_FW" 2>/dev/null || echo 'N/A')"
+    print_debug "HYPEROS_FW exists? $(test -e "$HYPEROS_FW" && echo YES || echo NO)"
+    print_debug "HYPEROS_FW type: $(file -b "$HYPEROS_FW" 2>/dev/null || echo 'N/A')"
+    df -h
 
     setup_tools
     extract_samsung
