@@ -352,15 +352,25 @@ do_port() {
 
     local SAMSUNG_OUT="$WORK_DIR/samsung/super_out"
     local HYPEROS_OUT
-    if [ -d "$WORK_DIR/hyperos/images/super_out" ]; then
-        HYPEROS_OUT="$WORK_DIR/hyperos/images/super_out"
-    elif [ -d "$WORK_DIR/hyperos/super_out" ]; then
+    if [ -d "$WORK_DIR/hyperos/super_out" ]; then
         HYPEROS_OUT="$WORK_DIR/hyperos/super_out"
-    else
+    elif [ -d "$WORK_DIR/hyperos/images/super_out" ]; then
         HYPEROS_OUT="$WORK_DIR/hyperos/images/super_out"
+    else
+        HYPEROS_OUT="$WORK_DIR/hyperos/super_out"
+        mkdir -p "$HYPEROS_OUT"
     fi
-    local PORT_OUT="$WORK_DIR/port"
     mkdir -p "$PORT_OUT"
+
+    # Handle A/B naming: create symlinks for _a partitions
+    if [ -f "$HYPEROS_OUT/system_a.img" ] && [ ! -f "$HYPEROS_OUT/system.img" ]; then
+        print_ok "Creating symlinks for A/B slot images"
+        for part in system product vendor odm system_ext mi_ext vendor_dlkm system_dlkm; do
+            if [ -f "$HYPEROS_OUT/${part}_a.img" ]; then
+                ln -sf "${part}_a.img" "$HYPEROS_OUT/$part.img"
+            fi
+        done
+    fi
 
     # Copy Samsung base partitions
     print_step "Copying Samsung base partitions"
@@ -381,7 +391,7 @@ do_port() {
         print_ok "Copied HyperOS system.img (flat)"
     else
         print_err "HyperOS system.img not found"
-        ls -la "$WORK_DIR/hyperos/images/"
+        ls -la "$HYPEROS_OUT/" 2>/dev/null || ls -la "$WORK_DIR/hyperos/" 2>/dev/null || true
         exit 1
     fi
 
