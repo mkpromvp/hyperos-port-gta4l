@@ -132,6 +132,11 @@ extract_samsung() {
         exit 1
     fi
 
+    # Clean up to save space
+    print_step "Cleaning up Samsung intermediates"
+    rm -f "$SAMSUNG_OUT/super.img.lz4" 2>/dev/null || true
+    rm -f "$SAMSUNG_OUT/super.img.sparse" 2>/dev/null || true
+    for f in "$SAMSUNG_OUT"/*.lz4; do [ -f "$f" ] && rm -f "$f"; done 2>/dev/null || true
     print_ok "Samsung firmware extracted"
 }
 
@@ -281,6 +286,11 @@ EOF
         ls -la "$HYPEROS_IMG_DIR/super_out/"
     fi
 
+    # Clean up to save space
+    print_step "Cleaning up HyperOS intermediates"
+    rm -f "$HYPEROS_IMG_DIR/super.img" 2>/dev/null || true
+    rm -f "$HYPEROS_OUT/firmware-update/greeshan.img" 2>/dev/null || true
+    df -h
     print_ok "HyperOS firmware extracted"
 }
 
@@ -404,6 +414,12 @@ print('Cannot fully extract without mount, continuing with patches')
         done
     done
 
+    # Clean up large images no longer needed
+    print_step "Cleaning up after porting"
+    rm -f "$WORK_DIR/samsung/super.img" 2>/dev/null || true
+    rm -rf "$WORK_DIR/samsung/super_out" 2>/dev/null || true
+    rm -rf "$WORK_DIR/hyperos/images/super_out" 2>/dev/null || true
+    df -h
     print_ok "Porting complete"
 }
 
