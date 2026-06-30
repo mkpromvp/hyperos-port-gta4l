@@ -47,6 +47,7 @@ setup_tools() {
     # Check lpunpack/lpmake are available
     if ! command -v lpunpack &>/dev/null || ! command -v lpmake &>/dev/null; then
         print_warn "lpunpack/lpmake not in PATH, checking tools dir"
+        chmod +x "$TOOLS_DIR"/* 2>/dev/null || true
         if [ -f "$TOOLS_DIR/lpunpack" ] && [ -f "$TOOLS_DIR/lpmake" ]; then
             export PATH="$TOOLS_DIR:$PATH"
             print_ok "Found tools in $TOOLS_DIR"

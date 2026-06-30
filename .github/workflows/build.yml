@@ -64,6 +64,9 @@ jobs:
           sudo apt install -y lz4 wget unzip tar python3 python3-pip \
             e2fsprogs android-sdk-libsparse-utils aria2
           pip3 install protobuf lz4 numpy --quiet
+          # Ensure local tools are executable
+          chmod +x $PWD/tools/* 2>/dev/null || true
+          echo "Tools ready"
 
       - name: Setup HyperOS-Port-Python tool
         run: |
