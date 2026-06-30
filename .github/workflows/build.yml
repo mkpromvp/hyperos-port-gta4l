@@ -119,43 +119,66 @@ jobs:
           echo "Downloaded file: $DL_FILE"
           file "$DL_FILE"
           
-          # Check if already a valid archive
+          # Check if already a valid tar archive (samloader may decrypt on-the-fly)
           if tar -tf "$DL_FILE" &>/dev/null; then
-            echo "File is a valid tar archive (samloader-rs decrypted on-the-fly)"
+            echo "File is a valid tar archive"
             mv "$DL_FILE" samsung_ap.tar.md5
           elif unzip -t "$DL_FILE" &>/dev/null; then
             echo "File is a valid zip archive"
             unzip -o "$DL_FILE" -d extracted/
-            # Find tar.md5 files inside
-            AP_FILE=$(ls extracted/*.tar.md5 extracted/*.tar 2>/dev/null | head -1)
-            if [ -n "$AP_FILE" ]; then
+            ls -la extracted/
+            # Check contents
+            if ls extracted/*.tar.md5 2>/dev/null | head -1; then
+              AP_FILE=$(ls extracted/*.tar.md5 | head -1)
               mv "$AP_FILE" samsung_ap.tar.md5
+              echo "Found tar.md5 in zip"
+            elif ls extracted/*.tar 2>/dev/null | head -1; then
+              AP_FILE=$(ls extracted/*.tar | head -1)
+              mv "$AP_FILE" samsung_ap.tar.md5
+              echo "Found tar in zip"
+            elif ls extracted/*.enc4 2>/dev/null | head -1; then
+              echo "Found encrypted .enc4 files, need decryption"
+              cp extracted/*.enc4 . 2>/dev/null || true
+              pip3 install pycryptodome requests -q 2>&1 | tail -1
+              python3 ../scripts/decrypt_samsung.py
             else
-              echo "No tar.md5 found in zip, need further processing"
-              mv "$DL_FILE" samsung_fw.zip
+              echo "Unknown contents in zip"
+              ls -la extracted/
+              exit 1
             fi
-          else
-            echo "File not a recognized archive, need to decrypt..."
+          elif [[ "$DL_FILE" == *.enc4 ]]; then
+            echo "File is .enc4, decrypting directly..."
             pip3 install pycryptodome requests -q 2>&1 | tail -1
             python3 ../scripts/decrypt_samsung.py
-            
-            # Check decrypted file
-            if tar -tf samsung_ap.tar.md5 &>/dev/null; then
-              echo "Decryption successful! File is a valid tar archive."
-            elif unzip -t samsung_ap.tar.md5 &>/dev/null; then
-              echo "Decryption produced a zip file"
-              mv samsung_ap.tar.md5 decrypted.zip
-              unzip -o decrypted.zip -d extracted/
-              AP_FILE=$(ls extracted/*.tar.md5 extracted/*.tar 2>/dev/null | head -1)
-              if [ -n "$AP_FILE" ]; then
-                mv "$AP_FILE" samsung_ap.tar.md5
-              fi
-            else
-              echo "Decryption still produced unrecognized data."
-              file samsung_ap.tar.md5
-              hexdump -C samsung_ap.tar.md5 2>/dev/null | head -5 || od -A x -t x1z -N 64 samsung_ap.tar.md5
-              # Maybe it's already stripped of enc4 by samloader - try as-is
-              echo "Trying to use as-is..."
+          else
+            echo "Unknown file format, trying decryption..."
+            pip3 install pycryptodome requests -q 2>&1 | tail -1
+            python3 ../scripts/decrypt_samsung.py
+          fi
+          
+          # If decryption produced files, handle them
+          if [ -f decrypted.tar.md5 ] && [ ! -f samsung_ap.tar.md5 ]; then
+            mv decrypted.tar.md5 samsung_ap.tar.md5
+          fi
+          
+          # If decryption produced a zip, extract it
+          if [ -f decrypted.zip ] && [ ! -f samsung_ap.tar.md5 ]; then
+            echo "Decryption produced a zip file, extracting..."
+            unzip -o decrypted.zip -d extracted_dec/
+            AP_FILE=$(ls extracted_dec/*.tar.md5 extracted_dec/*.tar 2>/dev/null | head -1)
+            if [ -n "$AP_FILE" ]; then
+              mv "$AP_FILE" samsung_ap.tar.md5
+            fi
+          fi
+          
+          # Check if we have a tar file from somewhere
+          if [ -z "$(ls *.tar.md5 *.tar 2>/dev/null)" ]; then
+            # Maybe the unzipped dir already has images
+            if [ -d extracted ] && ls extracted/*.img* 2>/dev/null | head -1; then
+              echo "Found image files directly in zip - using as directory firmware"
+              cd ..
+              echo "Samsung firmware ready as directory with images"
+              exit 0
             fi
           fi
           
@@ -163,8 +186,6 @@ jobs:
           if [ -f samsung_ap.tar.md5 ]; then
             echo "Samsung AP firmware ready: $(stat -c '%s' samsung_ap.tar.md5) bytes"
             file samsung_ap.tar.md5
-          elif [ -f samsung_fw.zip ]; then
-            echo "Samsung firmware as zip"
           else
             echo "ERROR: Could not prepare Samsung firmware."
             ls -la

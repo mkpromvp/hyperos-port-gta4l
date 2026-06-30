@@ -11,20 +11,38 @@ if not FW_VER:
 MODEL = os.environ.get("MODEL", "SM-T505N")
 REGION = os.environ.get("REGION", "EGY")
 
-ENC_FILE = ""
-for f in os.listdir("fw_samsung"):
-    if f.endswith(".zip") or f.endswith(".enc4"):
-        ENC_FILE = f"fw_samsung/{f}"
-        break
+SEARCH_DIRS = ["fw_samsung", "."]
 
-if not ENC_FILE:
-    for f in os.listdir("fw_samsung"):
-        if os.path.isfile(f"fw_samsung/{f}"):
-            ENC_FILE = f"fw_samsung/{f}"
+# Allow overriding firmware file via argument
+if len(sys.argv) > 1:
+    ENC_FILE = sys.argv[1]
+    print(f"[*] Using provided file: {ENC_FILE}")
+else:
+    ENC_FILE = ""
+    for d in SEARCH_DIRS:
+        if os.path.isdir(d):
+            for f in os.listdir(d):
+                if f.endswith(".zip") or f.endswith(".enc4"):
+                    ENC_FILE = os.path.join(d, f)
+                    break
+        if ENC_FILE:
             break
+
+    if not ENC_FILE:
+        for d in SEARCH_DIRS:
+            if os.path.isdir(d):
+                for f in os.listdir(d):
+                    fp = os.path.join(d, f)
+                    if os.path.isfile(fp):
+                        ENC_FILE = fp
+                        break
+            if ENC_FILE:
+                break
 
 if not ENC_FILE:
     print("NO ENCRYPTED FILE FOUND")
+    print(f"Current dir: {os.getcwd()}")
+    print(f"Contents: {os.listdir('.')}")
     sys.exit(1)
 
 print(f"[*] Found encrypted file: {ENC_FILE}")
@@ -166,7 +184,7 @@ file_size = os.path.getsize(ENC_FILE)
 print(f"[*] Decrypting {ENC_FILE} ({file_size} bytes)...")
 
 cipher = AES.new(key, AES.MODE_ECB)
-out_path = "fw_samsung/samsung_ap.tar.md5"
+out_path = os.path.join(os.path.dirname(ENC_FILE) if os.path.dirname(ENC_FILE) else ".", "samsung_ap.tar.md5")
 
 with open(ENC_FILE, "rb") as f_in, open(out_path, "wb") as f_out:
     remaining = file_size
